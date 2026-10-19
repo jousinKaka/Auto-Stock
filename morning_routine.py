@@ -11,8 +11,10 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from datetime import datetime
+from typing import Optional
 
 import yfinance as yf
 from rich.console import Console
@@ -47,7 +49,10 @@ if sys.platform == "win32":
 console = Console(force_terminal=True)
 
 
-def run_morning_routine(live_order: bool = False) -> None:
+def run_morning_routine(
+    live_order: bool = False,
+    max_live_buy_notional_usd: Optional[float] = None,
+) -> None:
     today_str = datetime.now().strftime("%Y-%m-%d")
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -273,11 +278,19 @@ def run_morning_routine(live_order: bool = False) -> None:
     risk_res = risk_agent.assess_risk(state, curr_price=current_close, recent_daily_closes=recent_5d)
     
     # 6. Execute or Stage Orders (Agent 7)
-    exec_agent = TossExecutionAgent(dry_run=not live_order)
+    exec_agent = TossExecutionAgent(
+        dry_run=not live_order,
+        max_live_buy_notional_usd=max_live_buy_notional_usd,
+    )
     mode_tag = "실거래 주문 접수" if live_order else "모의 접수 (Dry-Run)"
     console.print(f"\n[bold yellow]▶ [4/4] 토스증권 {mode_tag} 진행 (Agent 7)...[/bold yellow]")
     exec_result = exec_agent.execute_order_plan(order_plan)
     console.print(f"  ✔ [bold]{exec_result.summary_message}[/bold]")
+    if live_order and exec_result.failed_orders_count:
+        raise RuntimeError(
+            f"{exec_result.failed_orders_count} live order submission(s) failed or had an unknown result. "
+            "Inspect Toss order history before retrying."
+        )
 
     # 7. Journal & Markdown Report Creation (Agent 1)
     total_equity = state.remaining_cash + (state.total_shares * current_close)
@@ -355,8 +368,22 @@ def run_morning_routine(live_order: bool = False) -> None:
 def main():
     parser = argparse.ArgumentParser(description="Auto Stock 09:00 AM Daily Routine")
     parser.add_argument("--live", action="store_true", help="Submit actual orders to Toss Securities OpenAPI")
+    parser.add_argument(
+        "--max-live-buy-notional-usd",
+        type=float,
+        help="Required upper bound for total planned live SOXL buy notional in USD.",
+    )
     args = parser.parse_args()
-    run_morning_routine(live_order=args.live)
+    if args.live and (
+        args.max_live_buy_notional_usd is None
+        or not math.isfinite(args.max_live_buy_notional_usd)
+        or args.max_live_buy_notional_usd <= 0
+    ):
+        parser.error("--live requires a positive --max-live-buy-notional-usd.")
+    run_morning_routine(
+        live_order=args.live,
+        max_live_buy_notional_usd=args.max_live_buy_notional_usd,
+    )
 
 
 if __name__ == "__main__":

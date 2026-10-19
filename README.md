@@ -65,17 +65,25 @@ c:\Auto Stock\
 - 매일 아침 9시(월~금) Windows 작업 스케줄러(`AutoStock_Morning_Routine`)에 의해 자동 실행됩니다.
 - 전일 야간 체결 내역 정산 -> T값/평단가 갱신 -> 오늘 자 To-Do 주문표 산출 -> 일일 리포트 저장 -> 텔레그램 발송이 원스톱으로 처리됩니다.
 
-### 3. 텔레그램 알림 연동 테스트
+### 3. GitHub Actions live-trading safeguards
+- GitHub Actions runs on the Oracle self-hosted runner. Morning schedules and manual dispatch always use Dry-Run.
+- Only the 20:00 KST schedule can enter live mode, and only when the repository Actions variable `ENABLE_LIVE_TRADING` is exactly `true`.
+- Live mode additionally requires a positive `LIVE_BUY_LIMIT_USD`; the full planned buy notional must fit under that limit and within Toss USD buying power before any order is sent.
+- Before sending, the executor checks SOXL open orders, same-day closed orders, current holdings for sells, and creates a persistent per-day lock under `AUTO_STOCK_STATE_DIR`. Any existing order, failed preflight, or repeated attempt blocks the plan. Inspect the Toss account before manually removing a lock.
+- Live order submission is sequential and cannot be rolled back atomically. If a broker/network error occurs after some submissions, inspect Toss order history before any retry.
+- Do not enable live trading until the account, generated order sheet, and configured buy limit have been reviewed.
+
+### 4. 텔레그램 알림 연동 테스트
 ```powershell
 .\.venv\Scripts\python.exe test_telegram.py
 ```
 
-### 4. 과거 2~5년 무한매수법 V4.0 백테스트
+### 5. 과거 2~5년 무한매수법 V4.0 백테스트
 ```powershell
 .\.venv\Scripts\python.exe main.py --mode backtest --years 2
 ```
 
-### 5. 단위 테스트 검증
+### 6. 단위 테스트 검증
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -v
 ```

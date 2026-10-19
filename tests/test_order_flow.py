@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 import pandas as pd
+import pytest
 
 from agents.agent2_strategy import OrderLine, OrderPlan, OrderSide, OrderType, StrategyState
 from agents.agent7_execution import TossExecutionAgent
@@ -107,37 +108,8 @@ def test_toss_client_order_history_includes_required_status_and_date_filters():
     }
 
 
-def test_execution_agent_sends_loc_with_cls_and_unique_client_ids():
-    class FakeClient(TossSecuritiesClient):
-        def __init__(self):
-            super().__init__(client_id="id", client_secret="secret", account_seq="1")
-            self.orders = []
-
-        def create_order(
-            self,
-            symbol,
-            side,
-            order_type,
-            quantity,
-            price=None,
-            client_order_id=None,
-            time_in_force=None,
-        ):
-            kwargs = {
-                "symbol": symbol,
-                "side": side,
-                "order_type": order_type,
-                "quantity": quantity,
-                "price": price,
-                "client_order_id": client_order_id,
-                "time_in_force": time_in_force,
-            }
-            self.orders.append(kwargs)
-            return {"orderId": f"order-{len(self.orders)}"}
-
-    client = FakeClient()
-    agent = TossExecutionAgent(client=client, dry_run=False)
-    plan = OrderPlan(
+def _sample_order_plan():
+    return OrderPlan(
         date="2026-10-19",
         ticker="SOXL",
         state_snapshot=StrategyState(),
@@ -171,6 +143,57 @@ def test_execution_agent_sends_loc_with_cls_and_unique_client_ids():
         ],
     )
 
+
+class FakeExecutionClient(TossSecuritiesClient):
+    def __init__(self):
+        super().__init__(client_id="id", client_secret="secret", account_seq="1")
+        self.orders = []
+        self.open_orders = []
+        self.closed_orders = []
+
+    def get_order_history(self, status, **kwargs):
+        orders = self.open_orders if status == "OPEN" else self.closed_orders
+        return {"orders": orders, "hasNext": False}
+
+    def get_buying_power(self, currency="USD"):
+        return {"cashBuyingPower": "10000.00"}
+
+    def get_holdings(self):
+        return {"items": [{"symbol": "SOXL", "quantity": 100}]}
+
+    def create_order(
+        self,
+        symbol,
+        side,
+        order_type,
+        quantity,
+        price=None,
+        client_order_id=None,
+        time_in_force=None,
+    ):
+        kwargs = {
+            "symbol": symbol,
+            "side": side,
+            "order_type": order_type,
+            "quantity": quantity,
+            "price": price,
+            "client_order_id": client_order_id,
+            "time_in_force": time_in_force,
+        }
+        self.orders.append(kwargs)
+        return {"orderId": f"order-{len(self.orders)}"}
+
+
+def test_execution_agent_sends_loc_with_cls_and_stable_client_ids(tmp_path):
+    client = FakeExecutionClient()
+    agent = TossExecutionAgent(
+        client=client,
+        dry_run=False,
+        max_live_buy_notional_usd=1000,
+        state_dir=tmp_path,
+    )
+    plan = _sample_order_plan()
+
     result = agent.execute_order_plan(plan)
     client.http_client.close()
 
@@ -179,3 +202,97 @@ def test_execution_agent_sends_loc_with_cls_and_unique_client_ids():
     ids = [order["client_order_id"] for order in client.orders]
     assert len(set(ids)) == len(ids)
     assert all(len(order_id) <= 36 for order_id in ids)
+    assert ids == ["as-20261019-00", "as-20261019-01", "as-20261019-02"]
+
+
+def test_live_execution_requires_buy_limit_before_any_submission(tmp_path):
+    client = FakeExecutionClient()
+    agent = TossExecutionAgent(
+        client=client,
+        dry_run=False,
+        max_live_buy_notional_usd=700,
+        state_dir=tmp_path,
+    )
+    try:
+        with pytest.raises(ValueError, match="exceeding the"):
+            agent.execute_order_plan(_sample_order_plan())
+    finally:
+        client.http_client.close()
+
+    assert client.orders == []
+
+
+def test_live_execution_blocks_existing_orders_and_replay(tmp_path):
+    client = FakeExecutionClient()
+    client.open_orders = [{"orderId": "existing-open-order"}]
+    agent = TossExecutionAgent(
+        client=client,
+        dry_run=False,
+        max_live_buy_notional_usd=1000,
+        state_dir=tmp_path,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="existing open SOXL orders"):
+            agent.execute_order_plan(_sample_order_plan())
+        client.open_orders = []
+        with pytest.raises(RuntimeError, match="already attempted"):
+            agent.execute_order_plan(_sample_order_plan())
+    finally:
+        client.http_client.close()
+
+    assert client.orders == []
+
+
+def test_live_execution_blocks_closed_same_day_orders(tmp_path):
+    client = FakeExecutionClient()
+    client.closed_orders = [{"orderId": "existing-closed-order"}]
+    agent = TossExecutionAgent(
+        client=client,
+        dry_run=False,
+        max_live_buy_notional_usd=1000,
+        state_dir=tmp_path,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="existing closed SOXL orders for 2026-10-19"):
+            agent.execute_order_plan(_sample_order_plan())
+    finally:
+        client.http_client.close()
+
+    assert client.orders == []
+
+
+def test_live_execution_stops_after_first_submission_failure(tmp_path):
+    class FailingExecutionClient(FakeExecutionClient):
+        def create_order(self, *args, **kwargs):
+            self.orders.append(kwargs)
+            raise TimeoutError("submission result is unknown")
+
+    client = FailingExecutionClient()
+    agent = TossExecutionAgent(
+        client=client,
+        dry_run=False,
+        max_live_buy_notional_usd=1000,
+        state_dir=tmp_path,
+    )
+    try:
+        result = agent.execute_order_plan(_sample_order_plan())
+    finally:
+        client.http_client.close()
+
+    assert result.failed_orders_count == 1
+    assert len(result.orders_detail) == 1
+    assert len(client.orders) == 1
+
+
+def test_live_execution_refuses_unconfigured_toss_client():
+    class UnconfiguredClient(TossSecuritiesClient):
+        @property
+        def is_configured(self):
+            return False
+
+    client = UnconfiguredClient(client_id="id", client_secret="secret", account_seq="1")
+    try:
+        with pytest.raises(RuntimeError, match="requires configured Toss API credentials"):
+            TossExecutionAgent(client=client, dry_run=False, max_live_buy_notional_usd=1000)
+    finally:
+        client.http_client.close()

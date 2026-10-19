@@ -7,8 +7,10 @@ syncs account balance and holdings, and handles Dry-Run simulation.
 from __future__ import annotations
 
 import logging
-import uuid
+import math
+import os
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 
@@ -31,11 +33,121 @@ class ExecutionResult(BaseModel):
 class TossExecutionAgent:
     """Agent 7: Handles broker order submission and portfolio synchronization."""
 
-    def __init__(self, client: Optional[TossSecuritiesClient] = None, dry_run: bool = True):
+    def __init__(
+        self,
+        client: Optional[TossSecuritiesClient] = None,
+        dry_run: bool = True,
+        max_live_buy_notional_usd: Optional[float] = None,
+        state_dir: Optional[Path] = None,
+    ):
         self.client = client or TossSecuritiesClient()
-        # Default to dry_run unless explicitly disabled and credentials valid
-        self.dry_run = dry_run or not self.client.is_configured
+        if not dry_run and not self.client.is_configured:
+            raise RuntimeError("Live order submission requires configured Toss API credentials.")
+        self.dry_run = dry_run
+        self.max_live_buy_notional_usd = max_live_buy_notional_usd
+        configured_state_dir = os.environ.get("AUTO_STOCK_STATE_DIR")
+        self.state_dir = state_dir or Path(
+            configured_state_dir or Path.home() / ".local" / "state" / "auto-stock"
+        )
         self.logger = logging.getLogger("TossExecutionAgent")
+
+    def _prepare_live_execution(self, order_plan: OrderPlan) -> None:
+        limit = self.max_live_buy_notional_usd
+        if limit is None or not math.isfinite(limit) or limit <= 0:
+            raise ValueError("Live orders require a positive --max-live-buy-notional-usd limit.")
+
+        buy_notional = sum(
+            order.estimated_total for order in order_plan.orders if order.side.value == "BUY"
+        )
+        sell_quantity = sum(
+            order.quantity for order in order_plan.orders if order.side.value == "SELL"
+        )
+        if not math.isfinite(buy_notional) or buy_notional > limit:
+            raise ValueError(
+                f"Planned SOXL buys total ${buy_notional:.2f}, exceeding the "
+                f"${limit:.2f} live buy limit; no orders were submitted."
+            )
+        if any(
+            order.quantity <= 0 or not math.isfinite(order.price) or order.price <= 0
+            for order in order_plan.orders
+        ):
+            raise ValueError("Live order plan contains an invalid price or quantity.")
+
+        lock_path = self.state_dir / f"live-{order_plan.ticker}-{order_plan.date}.lock"
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError as exc:
+            raise RuntimeError(
+                f"Live execution already attempted for {order_plan.ticker} on "
+                f"{order_plan.date}; inspect Toss orders before removing {lock_path}."
+            ) from exc
+        with os.fdopen(lock_fd, "w", encoding="utf-8") as lock_file:
+            lock_file.write(
+                f"ticker={order_plan.ticker}\n"
+                f"date={order_plan.date}\n"
+                f"planned_buy_notional_usd={buy_notional:.2f}\n"
+                f"planned_orders={len(order_plan.orders)}\n"
+                f"created_at={datetime.now().isoformat()}\n"
+            )
+
+        for status in ("OPEN", "CLOSED"):
+            cursor = None
+            while True:
+                result = self.client.get_order_history(
+                    status=status,
+                    symbol=order_plan.ticker,
+                    from_date=order_plan.date if status == "CLOSED" else None,
+                    to_date=order_plan.date if status == "CLOSED" else None,
+                    cursor=cursor,
+                    limit=100,
+                )
+                orders = result.get("orders")
+                if not isinstance(orders, list):
+                    raise RuntimeError(
+                        f"Toss {status.lower()} order-history response has an invalid orders field; "
+                        "no planned orders were submitted."
+                    )
+                if orders:
+                    raise RuntimeError(
+                        f"Found existing {status.lower()} SOXL orders"
+                        + (f" for {order_plan.date}" if status == "CLOSED" else "")
+                        + "; review/cancel them before live automation. No planned orders were submitted."
+                    )
+                if not result.get("hasNext"):
+                    break
+                cursor = result.get("nextCursor")
+                if not cursor:
+                    raise RuntimeError(
+                        f"Toss {status.lower()} order-history page has no next cursor; "
+                        "no planned orders were submitted."
+                    )
+
+        buying_power = self.client.get_buying_power(currency="USD")
+        raw_cash = buying_power.get("cashBuyingPower", buying_power.get("usdCash"))
+        if raw_cash is None:
+            raise RuntimeError("Toss buying-power response has no USD cash field; no planned orders were submitted.")
+        available_cash = float(raw_cash)
+        if not math.isfinite(available_cash) or available_cash < buy_notional:
+            raise RuntimeError(
+                f"Planned SOXL buys total ${buy_notional:.2f}, exceeding available USD "
+                f"buying power ${available_cash:.2f}; no orders were submitted."
+            )
+
+        holdings = self.client.get_holdings()
+        items = holdings.get("items")
+        if not isinstance(items, list):
+            raise RuntimeError("Toss holdings response has an invalid items field; no planned orders were submitted.")
+        holding = next(
+            (item for item in items if item.get("symbol") == order_plan.ticker),
+            None,
+        )
+        available_shares = int(holding.get("quantity", 0)) if holding else 0
+        if sell_quantity > available_shares:
+            raise RuntimeError(
+                f"Planned SOXL sells total {sell_quantity} shares, exceeding current holdings "
+                f"of {available_shares}; no planned orders were submitted."
+            )
 
     def sync_account_state(self, current_state: StrategyState) -> Tuple[StrategyState, Dict[str, Any]]:
         """Synchronize strategy state with live Toss account balance and holdings."""
@@ -97,6 +209,9 @@ class TossExecutionAgent:
         success_count = 0
         fail_count = 0
 
+        if not self.dry_run and order_plan.orders:
+            self._prepare_live_execution(order_plan)
+
         for order_index, order in enumerate(order_plan.orders):
             order_detail = {
                 "tag": order.tag,
@@ -132,7 +247,7 @@ class TossExecutionAgent:
                         order_type=mapped_type,
                         quantity=order.quantity,
                         price=order_price,
-                        client_order_id=f"as-{order_plan.date.replace('-', '')}-{order_index:02d}-{uuid.uuid4().hex[:8]}",
+                        client_order_id=f"as-{order_plan.date.replace('-', '')}-{order_index:02d}",
                         time_in_force=time_in_force,
                     )
                     order_detail["status"] = "LIVE_SUBMITTED"
@@ -145,6 +260,8 @@ class TossExecutionAgent:
                     order_detail["error"] = str(e)
                     submitted_details.append(order_detail)
                     fail_count += 1
+                    if not self.dry_run:
+                        break
 
         mode_str = "[모의실행/Dry-Run]" if self.dry_run else "[실거래/Live]"
         summary = (

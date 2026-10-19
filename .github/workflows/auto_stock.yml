@@ -11,6 +11,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: auto-stock-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   trade_and_report:
     runs-on: [self-hosted, linux, x64, toss-static-ip]
@@ -32,7 +36,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run Auto Stock Pipeline
+      - name: Run Auto Stock Pipeline (Live, Evening Schedule Only)
+        if: github.event_name == 'schedule' && github.event.schedule == '0 11 * * 1-5' && vars.ENABLE_LIVE_TRADING == 'true' && vars.LIVE_BUY_LIMIT_USD != ''
         env:
           TOSS_CLIENT_ID: ${{ secrets.TOSS_CLIENT_ID }}
           TOSS_CLIENT_SECRET: ${{ secrets.TOSS_CLIENT_SECRET }}
@@ -40,9 +45,23 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TOTAL_BUDGET_USD: ${{ vars.TOTAL_BUDGET_USD || '30000.0' }}
+          AUTO_STOCK_STATE_DIR: /home/ubuntu/.local/state/auto-stock
           PYTHONIOENCODING: 'utf-8'
         run: |
-          # morning_routine.py 실행 (토스 API 연동 및 텔레그램 리포트 자동 발송)
+          python morning_routine.py --live --max-live-buy-notional-usd "${{ vars.LIVE_BUY_LIMIT_USD }}"
+
+      - name: Run Auto Stock Pipeline (Dry-Run)
+        if: github.event_name != 'schedule' || github.event.schedule != '0 11 * * 1-5' || vars.ENABLE_LIVE_TRADING != 'true' || vars.LIVE_BUY_LIMIT_USD == ''
+        env:
+          TOSS_CLIENT_ID: ${{ secrets.TOSS_CLIENT_ID }}
+          TOSS_CLIENT_SECRET: ${{ secrets.TOSS_CLIENT_SECRET }}
+          TOSS_ACCOUNT_SEQ: ${{ secrets.TOSS_ACCOUNT_SEQ }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TOTAL_BUDGET_USD: ${{ vars.TOTAL_BUDGET_USD || '30000.0' }}
+          AUTO_STOCK_STATE_DIR: /home/ubuntu/.local/state/auto-stock
+          PYTHONIOENCODING: 'utf-8'
+        run: |
           python morning_routine.py
 
       - name: Commit & Push Updated Ledger and Reports
