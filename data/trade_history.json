@@ -13,7 +13,9 @@
     "avg_price_before": 124.5713,
     "avg_price_after": 124.5713,
     "remaining_cash_before": 18165.73,
-    "remaining_cash_after": 17686.86,
+    "remaining_cash_after": 18180.0,
+    "cash_basis_cycle": 1,
+    "broker_cash_usd": 17686.86,
     "bought_shares": 0,
     "bought_amount": 0.0,
     "sold_shares": 0,
@@ -26,7 +28,8 @@
     "notes": [
       "야간 체결: 매수 0주 / 매도 0주",
       "매크로: RISK_ON (위험자산 선호 / 완만한 상승 우호 환경) | 반도체: DEEP_CORRECTION",
-      "리스크 등급: GREEN"
+      "리스크 등급: GREEN",
+      "2026-10-19 사용자 지정 전략 계산용 현금을 현재 회차에 한해 $18,180.00으로 설정했습니다. 토스 USD 매수 가능 금액은 $17,686.86입니다."
     ]
   }
 ]

@@ -49,6 +49,25 @@ if sys.platform == "win32":
 console = Console(force_terminal=True)
 
 
+def _sync_strategy_cash(
+    state: StrategyState,
+    broker_cash: float,
+    cash_basis_cycle: Optional[int],
+) -> Optional[int]:
+    if cash_basis_cycle == state.cycle:
+        modeled_cash = round(state.initial_budget - state.total_invested, 2)
+        if modeled_cash < 0:
+            raise RuntimeError(
+                f"Cost-basis cash model is negative (${modeled_cash:.2f}); "
+                "review the budget and SOXL holdings before generating orders."
+            )
+        state.remaining_cash = modeled_cash
+        return cash_basis_cycle
+
+    state.remaining_cash = broker_cash
+    return None
+
+
 def run_morning_routine(
     live_order: bool = False,
     max_live_buy_notional_usd: Optional[float] = None,
@@ -64,6 +83,7 @@ def run_morning_routine(
     # 1. Load Last Recorded State
     if history:
         latest = history[-1]
+        cash_basis_cycle = latest.get("cash_basis_cycle")
         state = StrategyState(
             ticker=latest.get("ticker", settings.target_ticker),
             cycle=latest.get("cycle", 1),
@@ -87,6 +107,7 @@ def run_morning_routine(
             remaining_cash=settings.total_budget_usd,
             initial_budget=settings.total_budget_usd,
         )
+        cash_basis_cycle = None
 
     # 2. Check Overnight Executions via Toss Securities API
     console.print("[bold yellow]▶ [1/4] 전일 야간 미국장 체결 결과 확인 (토스증권 API)...[/bold yellow]")
@@ -101,6 +122,7 @@ def run_morning_routine(
     prev_avg_price = state.avg_price
     prev_T = state.T
     prev_cash = state.remaining_cash
+    broker_cash_usd: Optional[float] = None
 
     if client.is_configured:
         # Closed orders provide actual fill quantities, prices, and LOC/limit types;
@@ -195,16 +217,18 @@ def run_morning_routine(
         raw_cash = bp_resp.get("cashBuyingPower", bp_resp.get("usdCash"))
         if raw_cash is None:
             raise RuntimeError("Toss buying-power response has no USD cash field.")
-        state.remaining_cash = float(raw_cash)
+        broker_cash_usd = float(raw_cash)
 
         if current_broker_shares > 0:
             state.total_shares = current_broker_shares
             state.avg_price = current_broker_avg
         elif state.total_shares == 0:
             state.avg_price = 0.0
+        cash_basis_cycle = _sync_strategy_cash(state, broker_cash_usd, cash_basis_cycle)
         console.print(
             f"  ✔ [green]계좌 동기화:[/green] {state.total_shares}주 @ ${state.avg_price:.2f} | "
-            f"현금 ${state.remaining_cash:.2f} | T={state.T:.2f}"
+            f"전략 계산 현금 ${state.remaining_cash:.2f} | "
+            f"토스 USD 매수 가능 금액 ${broker_cash_usd:.2f} | T={state.T:.2f}"
         )
     else:
         console.print("  [dim]API 미설정으로 로컬 장부 상태를 기준으로 진행합니다.[/dim]")
@@ -293,7 +317,9 @@ def run_morning_routine(
         )
 
     # 7. Journal & Markdown Report Creation (Agent 1)
-    total_equity = state.remaining_cash + (state.total_shares * current_close)
+    total_equity = (broker_cash_usd if broker_cash_usd is not None else state.remaining_cash) + (
+        state.total_shares * current_close
+    )
     unrealized_pnl = (current_close - state.avg_price) * state.total_shares if state.avg_price > 0 else 0.0
     unrealized_pct = (unrealized_pnl / (state.avg_price * state.total_shares)) * 100.0 if state.total_shares > 0 else 0.0
 
@@ -329,7 +355,15 @@ def run_morning_routine(
             f"매크로: {macro_res.overall_regime} | 반도체: {semi_res.trend_state}",
             f"리스크 등급: {risk_res.risk_level.value}",
         ],
+        cash_basis_cycle=cash_basis_cycle,
+        broker_cash_usd=broker_cash_usd,
     )
+    if cash_basis_cycle is not None and broker_cash_usd is not None:
+        record.notes.append(
+            f"회차 #{cash_basis_cycle} 전략 계산용 현금은 예산 ${state.initial_budget:.2f}에서 "
+            f"SOXL 보유원가 ${state.total_invested:.2f}를 뺀 값이며, "
+            f"토스 USD 매수 가능 금액은 ${broker_cash_usd:.2f}입니다."
+        )
     journal_agent.save_record(record)
     report_md = journal_agent.generate_daily_markdown_report(
         record=record,

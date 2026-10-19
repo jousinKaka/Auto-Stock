@@ -72,6 +72,7 @@ c:\Auto Stock\
 - Before sending, the executor checks SOXL open orders, same-day closed orders, current holdings for sells, and creates a persistent per-day lock under `AUTO_STOCK_STATE_DIR`. Any existing order, failed preflight, or repeated attempt blocks the plan. Inspect the Toss account before manually removing a lock.
 - Live order submission is sequential and cannot be rolled back atomically. If a broker/network error occurs after some submissions, inspect Toss order history before any retry.
 - Do not enable live trading until the account, generated order sheet, and configured buy limit have been reviewed.
+- For the currently recorded strategy cycle only, `cash_basis_cycle` calculates strategy cash as `TOTAL_BUDGET_USD - (SOXL shares × average price)` instead of replacing it with Toss buying power. The current ledger is initialized at approximately $18,180 against the $30,000 budget. Reports show this modeled strategy cash separately from actual Toss USD buying power; live-order preflight still checks the actual broker buying power. The cash basis mode ends automatically when the recorded cycle changes.
 
 ### 4. 텔레그램 알림 연동 테스트
 ```powershell

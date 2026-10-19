@@ -87,9 +87,14 @@ class TelegramNotifier:
             f"• <b>보유 주식</b>: <b>{record.total_shares_after}주</b> (평단가: <b>${record.avg_price_after:.2f}</b>)",
             f"• <b>현재가</b>: <b>${record.current_close:.2f}</b> ({((record.current_close - record.prev_close)/record.prev_close)*100:+.2f}%)",
             f"• <b>평가 손익</b>: {pnl_icon} <b>${record.unrealized_pnl:+.2f} ({record.unrealized_return_pct:+.2f}%)</b>",
-            f"• <b>남은 현금</b>: <b>${record.remaining_cash_after:,.2f}</b>",
+            f"• <b>전략 계산용 현금</b>: <b>${record.remaining_cash_after:,.2f}</b>",
             f"• <b>총 자산 가치</b>: <b>${record.total_equity:,.2f}</b>",
         ]
+        if record.broker_cash_usd is not None:
+            msg_lines.insert(
+                -1,
+                f"• <b>토스 USD 매수 가능 금액</b>: <b>${record.broker_cash_usd:,.2f}</b>",
+            )
 
         if record.bought_shares > 0 or record.sold_shares > 0:
             msg_lines.extend([
@@ -126,4 +131,3 @@ class TelegramNotifier:
         ])
 
         return self.send_message("\n".join(msg_lines), parse_mode="HTML")
-

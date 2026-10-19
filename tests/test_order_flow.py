@@ -7,8 +7,16 @@ import httpx
 import pandas as pd
 import pytest
 
-from agents.agent2_strategy import OrderLine, OrderPlan, OrderSide, OrderType, StrategyState
+from agents.agent2_strategy import (
+    InfiniteStrategyAgent,
+    OrderLine,
+    OrderPlan,
+    OrderSide,
+    OrderType,
+    StrategyState,
+)
 from agents.agent7_execution import TossExecutionAgent
+from morning_routine import _sync_strategy_cash
 from services.market_data import extract_daily_closes
 from services.toss_client import TossSecuritiesClient, TossToken
 
@@ -142,6 +150,54 @@ def _sample_order_plan():
             ),
         ],
     )
+
+
+def test_strategy_cash_uses_budget_less_cost_basis_for_selected_cycle():
+    state = StrategyState(
+        cycle=1,
+        T=15.78,
+        total_shares=95,
+        avg_price=124.5713,
+        remaining_cash=18180.0,
+        initial_budget=30000.0,
+    )
+
+    active_cycle = _sync_strategy_cash(state, broker_cash=17686.86, cash_basis_cycle=1)
+
+    assert active_cycle == 1
+    assert state.remaining_cash == 18165.73
+    plan = InfiniteStrategyAgent(state).generate_daily_orders(prev_close=93.67)
+    main_buy = next(order for order in plan.orders if order.tag == "MERGED_LARGE_NUMBER_BUY")
+    ladder_prices = [
+        order.price for order in plan.orders if order.tag.startswith("LADDER_BUY_")
+    ]
+    assert (main_buy.price, main_buy.quantity) == (104.91, 7)
+    assert ladder_prices == [93.75, 83.33, 75.00, 68.18, 62.50, 57.69, 53.57]
+    assert sum(
+        order.estimated_total for order in plan.orders if order.side == OrderSide.BUY
+    ) == 1228.39
+
+
+def test_strategy_cash_returns_to_broker_balance_after_cycle_change():
+    state = StrategyState(cycle=2, remaining_cash=17000.0)
+
+    active_cycle = _sync_strategy_cash(state, broker_cash=17686.86, cash_basis_cycle=1)
+
+    assert active_cycle is None
+    assert state.remaining_cash == 17686.86
+
+
+def test_strategy_cash_model_rejects_cost_basis_over_budget():
+    state = StrategyState(
+        cycle=1,
+        total_shares=100,
+        avg_price=310.0,
+        remaining_cash=1000.0,
+        initial_budget=30000.0,
+    )
+
+    with pytest.raises(RuntimeError, match="Cost-basis cash model is negative"):
+        _sync_strategy_cash(state, broker_cash=1000.0, cash_basis_cycle=1)
 
 
 class FakeExecutionClient(TossSecuritiesClient):
