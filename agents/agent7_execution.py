@@ -7,11 +7,12 @@ syncs account balance and holdings, and handles Dry-Run simulation.
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 
-from agents.agent2_strategy import OrderLine, OrderPlan, OrderSide, OrderType, StrategyState
+from agents.agent2_strategy import OrderPlan, OrderType, StrategyState
 from services.toss_client import TossSecuritiesClient
 
 
@@ -96,7 +97,7 @@ class TossExecutionAgent:
         success_count = 0
         fail_count = 0
 
-        for order in order_plan.orders:
+        for order_index, order in enumerate(order_plan.orders):
             order_detail = {
                 "tag": order.tag,
                 "side": order.side.value,
@@ -116,9 +117,14 @@ class TossExecutionAgent:
             else:
                 # Live submission via Toss OpenAPI
                 try:
-                    # In Toss OpenAPI, LOC ceiling price maps to LIMIT order
+                    # Toss represents LOC as LIMIT with CLS time-in-force.
                     mapped_type = "LIMIT" if order.order_type in [OrderType.LIMIT, OrderType.LOC] else "MARKET"
                     order_price = order.price if mapped_type == "LIMIT" else None
+                    time_in_force = (
+                        "CLS" if order.order_type == OrderType.LOC
+                        else "DAY" if order.order_type == OrderType.LIMIT
+                        else None
+                    )
 
                     resp = self.client.create_order(
                         symbol=order_plan.ticker,
@@ -126,7 +132,8 @@ class TossExecutionAgent:
                         order_type=mapped_type,
                         quantity=order.quantity,
                         price=order_price,
-                        client_order_id=f"soxl-{order.tag.lower()[:10]}-{datetime.now().strftime('%m%d%H%M%S')}",
+                        client_order_id=f"as-{order_plan.date.replace('-', '')}-{order_index:02d}-{uuid.uuid4().hex[:8]}",
+                        time_in_force=time_in_force,
                     )
                     order_detail["status"] = "LIVE_SUBMITTED"
                     order_detail["response"] = resp
@@ -155,4 +162,3 @@ class TossExecutionAgent:
             orders_detail=submitted_details,
             summary_message=summary,
         )
-

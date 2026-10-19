@@ -192,6 +192,22 @@ class InfiniteStrategyAgent:
 
         orders: List[OrderLine] = []
 
+        def append_ladder_orders(levels: int, base_quantity: int, ceiling_price: float) -> None:
+            base_quantity = max(base_quantity, int(one_unit_cash // ceiling_price), 1)
+            for i in range(1, levels + 1):
+                ladder_price = math.floor((one_unit_cash / (base_quantity + i)) * 100) / 100.0
+                if ladder_price > 0:
+                    orders.append(
+                        OrderLine(
+                            side=OrderSide.BUY,
+                            order_type=OrderType.LOC,
+                            price=ladder_price,
+                            quantity=1,
+                            tag=f"LADDER_BUY_{i}",
+                            description=f"급락 대비 하방 사다리 매수 {i}차 (1주)",
+                        )
+                    )
+
         # ==========================================
         # 1. SELL ORDERS (지정가 및 쿼터매도)
         # ==========================================
@@ -249,21 +265,7 @@ class InfiniteStrategyAgent:
                         )
                     )
 
-                # Downward Ladder LOC orders (7 levels)
-                base_qty = max(1, qty)
-                for i in range(1, settings.ladder_levels_front + 1):
-                    ladder_price = math.floor((one_unit_cash / (base_qty + i)) * 100) / 100.0
-                    if ladder_price > 0:
-                        orders.append(
-                            OrderLine(
-                                side=OrderSide.BUY,
-                                order_type=OrderType.LOC,
-                                price=ladder_price,
-                                quantity=1,
-                                tag=f"LADDER_BUY_{i}",
-                                description=f"급락 대비 하방 사다리 매수 {i}차 (1주)",
-                            )
-                        )
+                append_ladder_orders(settings.ladder_levels_front, qty, first_buy_price)
 
             # --- Case B: First Half (T < divisions / 2) ---
             elif self.state.is_first_half:
@@ -277,10 +279,18 @@ class InfiniteStrategyAgent:
                 full_unit_qty = int(one_unit_cash // avg_buy_price) if avg_buy_price > 0 else 0
                 avg_buy_qty = max(0, full_unit_qty - star_buy_qty)
 
+                ladder_ceiling_price = min(
+                    price for price, quantity in (
+                        (star_buy_price, star_buy_qty),
+                        (avg_buy_price, avg_buy_qty),
+                    ) if quantity > 0
+                ) if star_buy_qty > 0 or avg_buy_qty > 0 else large_number_cap
+
                 # Check Large Number condition: if star_buy_price exceeds cap, merge into cap
                 if star_buy_price > large_number_cap:
-                    merged_qty = star_buy_qty + avg_buy_qty
+                    merged_qty = int(one_unit_cash // large_number_cap)
                     if merged_qty > 0:
+                        ladder_ceiling_price = large_number_cap
                         orders.append(
                             OrderLine(
                                 side=OrderSide.BUY,
@@ -315,21 +325,11 @@ class InfiniteStrategyAgent:
                             )
                         )
 
-                # Downward Ladder (7 levels)
-                base_qty = max(1, full_unit_qty)
-                for i in range(1, settings.ladder_levels_front + 1):
-                    ladder_price = math.floor((one_unit_cash / (base_qty + i)) * 100) / 100.0
-                    if ladder_price > 0:
-                        orders.append(
-                            OrderLine(
-                                side=OrderSide.BUY,
-                                order_type=OrderType.LOC,
-                                price=ladder_price,
-                                quantity=1,
-                                tag=f"LADDER_BUY_{i}",
-                                description=f"급락 대비 하방 사다리 매수 {i}차 (1주)",
-                            )
-                        )
+                append_ladder_orders(
+                    settings.ladder_levels_front,
+                    full_unit_qty,
+                    ladder_ceiling_price,
+                )
 
             # --- Case C: Second Half (T >= divisions / 2) ---
             else:
@@ -351,21 +351,7 @@ class InfiniteStrategyAgent:
                         )
                     )
 
-                # Downward Ladder (8 levels in second half)
-                base_qty = max(1, qty)
-                for i in range(1, settings.ladder_levels_back + 1):
-                    ladder_price = math.floor((one_unit_cash / (base_qty + i)) * 100) / 100.0
-                    if ladder_price > 0:
-                        orders.append(
-                            OrderLine(
-                                side=OrderSide.BUY,
-                                order_type=OrderType.LOC,
-                                price=ladder_price,
-                                quantity=1,
-                                tag=f"LADDER_BUY_{i}",
-                                description=f"급락 대비 하방 사다리 매수 {i}차 (1주)",
-                            )
-                        )
+                append_ladder_orders(settings.ladder_levels_back, qty, star_buy_price)
 
         # ==========================================
         # 3. REVERSE MODE (소진 모드)
@@ -445,6 +431,7 @@ class InfiniteStrategyAgent:
 
         total_sold_qty = sum(qty for _, qty, _ in filled_sells)
         total_sold_revenue = sum(price * qty for price, qty, _ in filled_sells)
+        one_unit_cash = self.calculate_one_unit_cash()
 
         realized_pnl = 0.0
         cycle_completed = False
@@ -484,12 +471,8 @@ class InfiniteStrategyAgent:
             self.state.remaining_cash -= total_bought_cost
 
             # Update T for buys
-            one_unit = self.calculate_one_unit_cash()
-            # If one_unit is valid, increase T proportionately
-            if one_unit > 0:
-                t_increase = total_bought_cost / one_unit
-                # Cap t_increase to avoid overshoot
-                self.state.T += min(1.5, t_increase)
+            if one_unit_cash > 0:
+                self.state.T += total_bought_cost / one_unit_cash
             else:
                 self.state.T += 1.0
 

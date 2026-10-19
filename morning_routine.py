@@ -13,13 +13,9 @@ from __future__ import annotations
 import argparse
 import sys
 from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, List, Optional
 
-import pandas as pd
 import yfinance as yf
 from rich.console import Console
-from rich.panel import Panel
 from rich.table import Table
 
 from agents import (
@@ -28,10 +24,7 @@ from agents import (
     ExecutionJournalAgent,
     InfiniteStrategyAgent,
     MacroIntelligenceAgent,
-    OrderPlan,
     OrderSide,
-    RiskAssessment,
-    RiskLevel,
     RiskWatchdogAgent,
     SemiIndustryAgent,
     StrategyMode,
@@ -39,7 +32,7 @@ from agents import (
     TossExecutionAgent,
 )
 from config.settings import settings
-from config.toss_config import toss_config
+from services.market_data import extract_daily_closes
 from services.toss_client import TossSecuritiesClient
 
 if sys.platform == "win32":
@@ -77,6 +70,7 @@ def run_morning_routine(live_order: bool = False) -> None:
             total_shares=latest.get("total_shares_after", 0),
             remaining_cash=latest.get("remaining_cash_after", settings.total_budget_usd),
             initial_budget=settings.total_budget_usd,
+            mode=StrategyMode(latest.get("mode", StrategyMode.NORMAL.value)),
         )
     else:
         # Initial default or mid-entry state
@@ -104,74 +98,130 @@ def run_morning_routine(live_order: bool = False) -> None:
     prev_cash = state.remaining_cash
 
     if client.is_configured:
-        try:
-            # Query live holdings & buying power
-            holdings_resp = client.get_holdings()
-            items = holdings_resp.get("items", [])
-            soxl_item = next((it for it in items if it.get("symbol") == settings.target_ticker), None)
+        # Closed orders provide actual fill quantities, prices, and LOC/limit types;
+        # a holdings delta alone cannot distinguish quarter sells from target sells.
+        if history and latest.get("date", today_str) < today_str:
+            cursor = None
+            closed_orders = []
+            while True:
+                page = client.get_order_history(
+                    status="CLOSED",
+                    symbol=settings.target_ticker,
+                    from_date=latest["date"],
+                    to_date=today_str,
+                    cursor=cursor,
+                    limit=100,
+                )
+                page_orders = page.get("orders", [])
+                if not isinstance(page_orders, list):
+                    raise RuntimeError("Toss order-history response has an invalid orders field.")
+                closed_orders.extend(page_orders)
+                if not page.get("hasNext"):
+                    break
+                cursor = page.get("nextCursor")
+                if not cursor:
+                    raise RuntimeError("Toss order-history page is missing its next cursor.")
 
-            current_broker_shares = int(soxl_item.get("quantity", 0)) if soxl_item else 0
-            current_broker_avg = float(soxl_item.get("averagePrice", 0.0)) if soxl_item else 0.0
+            closed_orders.sort(
+                key=lambda order: (
+                    (order.get("execution") or {}).get("filledAt") or "",
+                    order.get("orderedAt") or "",
+                )
+            )
+            filled_buys = []
+            filled_sells = []
+            for order in closed_orders:
+                execution = order.get("execution") or {}
+                filled_value = float(execution.get("filledQuantity") or 0)
+                if filled_value <= 0:
+                    continue
+                quantity = int(filled_value)
+                if quantity != filled_value:
+                    raise ValueError(
+                        f"Fractional SOXL fills are not supported by the strategy ledger: {filled_value} shares."
+                    )
 
-            bp_resp = client.get_buying_power(currency="USD")
-            raw_cash = bp_resp.get("cashBuyingPower", bp_resp.get("usdCash", state.remaining_cash))
-            current_broker_cash = float(raw_cash) if raw_cash is not None else state.remaining_cash
-
-            # Detect overnight share delta
-            if current_broker_cash > 0 or current_broker_shares > 0:
-                share_delta = current_broker_shares - prev_shares
-                if share_delta > 0:
-                    overnight_bought_shares = share_delta
-                    overnight_bought_cost = round(prev_cash - current_broker_cash, 2)
-                    console.print(f"  ✔ [green]야간 매수 체결 확인:[/green] +{overnight_bought_shares}주 체결 완료 (비용: ${overnight_bought_cost:.2f})")
-                    state.total_shares = current_broker_shares
-                    state.avg_price = current_broker_avg
-                    state.remaining_cash = current_broker_cash
-                    state.T += 1.0  # Increment T
-                elif share_delta < 0:
-                    overnight_sold_shares = abs(share_delta)
-                    overnight_sold_revenue = round(current_broker_cash - prev_cash, 2)
-                    realized_pnl = round(overnight_sold_revenue - (prev_avg_price * overnight_sold_shares), 2)
-                    console.print(f"  ✔ [green]야간 매도(익절/쿼터) 체결 확인:[/green] -{overnight_sold_shares}주 체결 (수익: ${realized_pnl:+.2f})")
-                    state.total_shares = current_broker_shares
-                    state.avg_price = current_broker_avg if current_broker_shares > 0 else 0.0
-                    state.remaining_cash = current_broker_cash
-                    if current_broker_shares == 0:
-                        console.print("  🎉 [bold green]전량 익절 완료! 사이클이 종료되어 새 회차가 시작됩니다.[/bold green]")
-                        state.cycle += 1
-                        state.T = 0.0
-                    else:
-                        state.T *= 0.75  # Quarter sell decay
+                avg_fill_price = execution.get("averageFilledPrice")
+                if avg_fill_price is None:
+                    filled_amount = execution.get("filledAmount")
+                    if filled_amount is None:
+                        raise RuntimeError("Toss execution record has no fill price or filled amount.")
+                    fill_price = float(filled_amount) / quantity
                 else:
-                    console.print("  ✔ [dim]전일 야간 체결 내역 없음 (보유 수량 변동 없음)[/dim]")
+                    fill_price = float(avg_fill_price)
+
+                side = str(order.get("side", "")).upper()
+                if side == OrderSide.BUY.value:
+                    filled_buys.append((fill_price, quantity, "BROKER_BUY"))
+                elif side == OrderSide.SELL.value:
+                    if state.mode == StrategyMode.REVERSE:
+                        tag = "REVERSE_SELL"
+                    elif order.get("timeInForce") == "CLS":
+                        tag = "QUARTER_SELL_LOC"
+                    else:
+                        tag = "TARGET_SELL_LIMIT"
+                    filled_sells.append((fill_price, quantity, tag))
+                else:
+                    raise RuntimeError(f"Unexpected Toss order side in fill history: {side!r}")
+
+            if filled_buys or filled_sells:
+                execution_result = InfiniteStrategyAgent(state).apply_execution(filled_buys, filled_sells)
+                overnight_bought_shares = execution_result["bought_shares"]
+                overnight_sold_shares = execution_result["sold_shares"]
+                overnight_bought_cost = round(sum(price * qty for price, qty, _ in filled_buys), 2)
+                overnight_sold_revenue = round(sum(price * qty for price, qty, _ in filled_sells), 2)
+                realized_pnl = execution_result["realized_pnl"]
+                console.print(
+                    f"  ✔ [green]전일 체결 내역 반영:[/green] "
+                    f"매수 {overnight_bought_shares}주 (${overnight_bought_cost:.2f}), "
+                    f"매도 {overnight_sold_shares}주 (${overnight_sold_revenue:.2f}), "
+                    f"T={state.T:.2f}"
+                )
             else:
-                # Broker account is not yet funded or holding 0, preserve external position from ledger
-                console.print(f"  ✔ [dim]외부/통합 계좌 포지션 유지:[/dim] {state.total_shares}주 @ ${state.avg_price:.2f} (T값: {state.T:.2f})")
-        except Exception as e:
-            console.print(f"  ⚠️ [yellow]토스 API 조회 실패 (로컬 상태 유지):[/yellow] {e}")
+                console.print("  ✔ [dim]전일 체결된 SOXL 주문 없음[/dim]")
+
+        holdings_resp = client.get_holdings()
+        items = holdings_resp.get("items", [])
+        soxl_item = next((it for it in items if it.get("symbol") == settings.target_ticker), None)
+        current_broker_shares = int(soxl_item.get("quantity", 0)) if soxl_item else 0
+        current_broker_avg = float(soxl_item.get("averagePrice", 0.0)) if soxl_item else 0.0
+
+        bp_resp = client.get_buying_power(currency="USD")
+        raw_cash = bp_resp.get("cashBuyingPower", bp_resp.get("usdCash"))
+        if raw_cash is None:
+            raise RuntimeError("Toss buying-power response has no USD cash field.")
+        state.remaining_cash = float(raw_cash)
+
+        if current_broker_shares > 0:
+            state.total_shares = current_broker_shares
+            state.avg_price = current_broker_avg
+        elif state.total_shares == 0:
+            state.avg_price = 0.0
+        console.print(
+            f"  ✔ [green]계좌 동기화:[/green] {state.total_shares}주 @ ${state.avg_price:.2f} | "
+            f"현금 ${state.remaining_cash:.2f} | T={state.T:.2f}"
+        )
     else:
         console.print("  [dim]API 미설정으로 로컬 장부 상태를 기준으로 진행합니다.[/dim]")
 
     # 3. Live Price & Market Intelligence
     console.print("\n[bold yellow]▶ [2/4] 마감 종가 및 시장 인텔리전스 수집...[/bold yellow]")
-    current_close = 100.0
-    recent_5d = []
+    current_close = 0.0
     try:
-        # Try Toss API first for official real-time price
-        if client.is_configured:
-            current_close = client.get_current_price(settings.target_ticker)
-        
-        # Download recent history via yfinance
         df = yf.download(settings.target_ticker, period="10d", interval="1d", progress=False)
-        if not df.empty:
-            closes = df["Close"].squeeze()
-            if isinstance(closes, pd.DataFrame):
-                closes = closes.iloc[:, 0]
-            closes = closes.dropna()
-            current_close = float(closes.iloc[-1]) if current_close <= 0 else current_close
-            recent_5d = [float(x) for x in closes.iloc[-5:].values]
+        recent_5d = extract_daily_closes(df)
     except Exception as e:
-        console.print(f"  [dim]시세 조회 오류: {e}[/dim]")
+        raise RuntimeError("Unable to retrieve a reliable completed SOXL daily close.") from e
+
+    prev_close = recent_5d[-1]
+    current_close = prev_close
+    if client.is_configured:
+        try:
+            quote = client.get_current_price(settings.target_ticker)
+            if quote > 0:
+                current_close = quote
+        except Exception as e:
+            console.print(f"  [yellow]실시간 시세 조회 실패; 전일 종가로 평가합니다:[/yellow] {e}")
 
     macro_agent = MacroIntelligenceAgent()
     macro_res = macro_agent.fetch_and_analyze()
@@ -182,14 +232,17 @@ def run_morning_routine(live_order: bool = False) -> None:
     fund_agent = ConstituentsFundamentalAgent()
     fund_res = fund_agent.analyze()
 
-    console.print(f"  ✔ {settings.target_ticker} 마감 종가: ${current_close:.2f}")
+    console.print(
+        f"  ✔ {settings.target_ticker} 전일 종가: ${prev_close:.2f} | "
+        f"현재 조회가: ${current_close:.2f}"
+    )
     console.print(f"  ✔ 거시 매크로: {macro_res.overall_regime} | 반도체 사이클: {semi_res.trend_state}")
 
     # 4. Generate Today's To-Do Orders (Agent 2)
     console.print(f"\n[bold yellow]▶ [3/4] 오늘의 무한매수 V4.0 To-Do 주문표 산출 (Agent 2)...[/bold yellow]")
     strat_agent = InfiniteStrategyAgent(state)
     order_plan = strat_agent.generate_daily_orders(
-        prev_close=current_close,
+        prev_close=prev_close,
         recent_5d_closes=recent_5d,
         date_str=today_str,
     )
@@ -235,7 +288,7 @@ def run_morning_routine(live_order: bool = False) -> None:
         date=today_str,
         cycle=state.cycle,
         ticker=state.ticker,
-        prev_close=current_close,
+        prev_close=prev_close,
         current_close=current_close,
         T_before=prev_T,
         T_after=state.T,

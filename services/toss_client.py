@@ -195,6 +195,7 @@ class TossSecuritiesClient:
         quantity: int,
         price: Optional[float] = None,
         client_order_id: Optional[str] = None,
+        time_in_force: Optional[str] = None,
     ) -> Dict[str, Any]:
         """POST /api/v1/orders - Place a new stock order."""
         headers = self._get_headers(require_account=True)
@@ -205,28 +206,45 @@ class TossSecuritiesClient:
             "symbol": symbol,
             "side": side.upper(),
             "orderType": order_type.upper(),
-            "quantity": quantity,
+            "quantity": str(quantity),
             "clientOrderId": cid,
         }
         if order_type.upper() == "LIMIT":
             if price is None or price <= 0:
                 raise ValueError("Price is required for LIMIT order")
             body["price"] = f"{price:.2f}"
+        if time_in_force is not None:
+            body["timeInForce"] = time_in_force.upper()
 
         resp = self.http_client.post(url, headers=headers, json=body)
         resp.raise_for_status()
         return resp.json()
 
-    def get_order_history(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
-        """GET /api/v1/orders - Retrieve open or closed orders."""
+    def get_order_history(
+        self,
+        status: str,
+        symbol: Optional[str] = None,
+        from_date: Optional[str] = None,
+        to_date: Optional[str] = None,
+        cursor: Optional[str] = None,
+        limit: int = 100,
+    ) -> Dict[str, Any]:
+        """GET /api/v1/orders - Retrieve a page of open or closed orders."""
         headers = self._get_headers(require_account=True)
         url = f"{self.base_url}/api/v1/orders"
-        params = {}
-        if status:
-            params["status"] = status
+        params: Dict[str, Any] = {"status": status, "limit": limit}
+        if symbol:
+            params["symbol"] = symbol
+        if from_date:
+            params["from"] = from_date
+        if to_date:
+            params["to"] = to_date
+        if cursor:
+            params["cursor"] = cursor
         resp = self.http_client.get(url, headers=headers, params=params)
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        return data.get("result", {}) if isinstance(data, dict) else {}
 
     def cancel_order(self, order_id: str) -> Dict[str, Any]:
         """POST /api/v1/orders/{orderId}/cancel - Cancel an open order."""
@@ -235,4 +253,3 @@ class TossSecuritiesClient:
         resp = self.http_client.post(url, headers=headers)
         resp.raise_for_status()
         return resp.json()
-

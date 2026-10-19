@@ -12,7 +12,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-import pandas as pd
 import yfinance as yf
 from rich.console import Console
 from rich.panel import Panel
@@ -35,7 +34,7 @@ from agents import (
     TossExecutionAgent,
 )
 from config.settings import settings
-from config.toss_config import toss_config
+from services.market_data import extract_daily_closes
 
 if sys.platform == "win32":
     try:
@@ -81,22 +80,16 @@ def run_pipeline(dry_run: bool = True) -> None:
 
     # 2. Get Current/Previous Price of Target Ticker (SOXL)
     console.print(f"\n[bold yellow]▶ [2/6] {settings.target_ticker} 시세 및 계좌 상태 동기화 (Agent 7)...[/bold yellow]")
-    prev_close = 30.0
-    current_close = 30.0
-    recent_5d = []
+    current_close = 0.0
 
     try:
         soxl_data = yf.download(settings.target_ticker, period="10d", interval="1d", progress=False)
-        if not soxl_data.empty and len(soxl_data) >= 2:
-            closes = soxl_data["Close"].squeeze()
-            if isinstance(closes, pd.DataFrame):
-                closes = closes.iloc[:, 0]
-            closes = closes.dropna()
-            current_close = float(closes.iloc[-1])
-            prev_close = float(closes.iloc[-2])
-            recent_5d = [float(x) for x in closes.iloc[-5:].values]
+        recent_5d = extract_daily_closes(soxl_data)
     except Exception as e:
-        console.print(f"[dim]시세 다운로드 실패로 기본 시세 적용 (${prev_close:.2f}): {e}[/dim]")
+        raise RuntimeError("Unable to retrieve a reliable completed SOXL daily close.") from e
+
+    prev_close = recent_5d[-1]
+    current_close = prev_close
 
     # 3. Strategy State Loading & Sync
     journal_agent = ExecutionJournalAgent()
@@ -116,6 +109,7 @@ def run_pipeline(dry_run: bool = True) -> None:
             total_shares=latest.get("total_shares_after", 0),
             remaining_cash=latest.get("remaining_cash_after", settings.total_budget_usd),
             initial_budget=settings.total_budget_usd,
+            mode=latest.get("mode", "NORMAL"),
         )
     else:
         state = StrategyState(

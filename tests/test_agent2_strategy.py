@@ -3,9 +3,7 @@ import pandas as pd
 from agents.agent2_strategy import (
     InfiniteStrategyAgent,
     StrategyState,
-    StrategyMode,
     OrderSide,
-    OrderType,
     InfiniteBacktester,
 )
 
@@ -121,6 +119,39 @@ def test_second_half_orders():
     assert star_buys_uncapped[0].price == 29.39  # star_price - 0.01 un-capped
 
 
+def test_first_half_large_number_cap_keeps_ladders_below_main_buy():
+    state = StrategyState(
+        ticker="SOXL",
+        divisions=40,
+        target_profit_rate=0.20,
+        large_number_ratio=1.12,
+        T=15.78,
+        avg_price=124.5713,
+        total_shares=95,
+        remaining_cash=18165.73,
+    )
+    plan = InfiniteStrategyAgent(state).generate_daily_orders(prev_close=93.67)
+
+    main_buy = next(o for o in plan.orders if o.tag == "MERGED_LARGE_NUMBER_BUY")
+    ladders = [o for o in plan.orders if o.tag.startswith("LADDER_BUY_")]
+    assert main_buy.price == 104.91
+    assert main_buy.quantity == 7
+    assert len(ladders) == 7
+    assert all(order.price < main_buy.price for order in ladders)
+    assert [order.price for order in ladders] == sorted(
+        (order.price for order in ladders), reverse=True
+    )
+    assert [order.price for order in ladders] == [
+        93.75,
+        83.33,
+        75.00,
+        68.18,
+        62.50,
+        57.69,
+        53.57,
+    ]
+
+
 def test_execution_application_and_cycle_completion():
     """Verify state transitions and cycle reset upon full liquidation."""
     state = StrategyState(
@@ -155,6 +186,46 @@ def test_execution_application_and_cycle_completion():
     assert agent.state.total_shares == 0
     assert agent.state.avg_price == 0.0
     assert agent.state.remaining_cash > 9000.0
+
+
+def test_execution_updates_t_proportionally_to_one_unit_cash():
+    state = StrategyState(
+        ticker="SOXL",
+        divisions=40,
+        T=5.0,
+        avg_price=50.0,
+        total_shares=10,
+        remaining_cash=8750.0,
+    )
+    agent = InfiniteStrategyAgent(state)
+
+    agent.apply_execution(filled_buys=[(25.0, 5, "BROKER_BUY")], filled_sells=[])
+
+    assert agent.state.T == pytest.approx(5.5)
+
+
+def test_execution_applies_distinct_quarter_and_target_sell_t_factors():
+    state = StrategyState(
+        ticker="SOXL",
+        divisions=40,
+        T=8.0,
+        avg_price=50.0,
+        total_shares=200,
+        remaining_cash=5000.0,
+    )
+    agent = InfiniteStrategyAgent(state)
+
+    agent.apply_execution(
+        filled_buys=[],
+        filled_sells=[(60.0, 50, "QUARTER_SELL_LOC")],
+    )
+    assert agent.state.T == pytest.approx(6.0)
+
+    agent.apply_execution(
+        filled_buys=[],
+        filled_sells=[(60.0, 75, "TARGET_SELL_LIMIT")],
+    )
+    assert agent.state.T == pytest.approx(1.5)
 
 
 def test_infinite_backtester_synthetic():
