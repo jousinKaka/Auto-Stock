@@ -26,6 +26,7 @@ from agents import (
     ExecutionJournalAgent,
     InfiniteStrategyAgent,
     MacroIntelligenceAgent,
+    OrderPlan,
     OrderSide,
     RiskWatchdogAgent,
     SemiIndustryAgent,
@@ -68,10 +69,24 @@ def _sync_strategy_cash(
     return None
 
 
+def _buy_only_plan(order_plan: OrderPlan) -> OrderPlan:
+    return order_plan.model_copy(
+        update={
+            "orders": [
+                order for order in order_plan.orders if order.side == OrderSide.BUY
+            ]
+        }
+    )
+
+
 def run_morning_routine(
     live_order: bool = False,
     max_live_buy_notional_usd: Optional[float] = None,
+    live_buy_only: bool = False,
 ) -> None:
+    if live_buy_only and not live_order:
+        raise ValueError("Buy-only mode is available only for live order execution.")
+
     today_str = datetime.now().strftime("%Y-%m-%d")
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -275,6 +290,9 @@ def run_morning_routine(
         recent_5d_closes=recent_5d,
         date_str=today_str,
     )
+    if live_buy_only:
+        order_plan = _buy_only_plan(order_plan)
+        console.print("  [yellow]오늘은 매수 주문만 제출하며 매도 주문은 제외합니다.[/yellow]")
 
     order_table = Table(title=f"📋 오늘의 {settings.target_ticker} To-Do 매매 주문표 (T값: {state.T:.2f}/{state.divisions})", show_lines=True)
     order_table.add_column("구분", justify="center", style="bold")
@@ -349,6 +367,7 @@ def run_morning_routine(
         investment_rationale=(
             f"09:00 AM 정기 루틴: 전일 체결 정산 후 T값 {state.T:.2f} 기준으로 "
             f"오늘의 1회 매수금 ${order_plan.one_unit_cash:.2f} 주문표 생성 및 {mode_tag} 완료."
+            + (" (사용자 요청으로 매수 주문만 포함)" if live_buy_only else "")
         ),
         notes=[
             f"야간 체결: 매수 {overnight_bought_shares}주 / 매도 {overnight_sold_shares}주",
@@ -364,6 +383,8 @@ def run_morning_routine(
             f"SOXL 보유원가 ${state.total_invested:.2f}를 뺀 값이며, "
             f"토스 USD 매수 가능 금액은 ${broker_cash_usd:.2f}입니다."
         )
+    if live_buy_only:
+        record.notes.append("사용자 요청으로 오늘의 실거래 계획에서 매도 주문을 제외하고 매수만 제출합니다.")
     journal_agent.save_record(record)
     report_md = journal_agent.generate_daily_markdown_report(
         record=record,
@@ -403,6 +424,11 @@ def main():
     parser = argparse.ArgumentParser(description="Auto Stock 09:00 AM Daily Routine")
     parser.add_argument("--live", action="store_true", help="Submit actual orders to Toss Securities OpenAPI")
     parser.add_argument(
+        "--buy-only",
+        action="store_true",
+        help="In live mode, omit all planned sell orders from today's execution.",
+    )
+    parser.add_argument(
         "--max-live-buy-notional-usd",
         type=float,
         help="Required upper bound for total planned live SOXL buy notional in USD.",
@@ -414,9 +440,12 @@ def main():
         or args.max_live_buy_notional_usd <= 0
     ):
         parser.error("--live requires a positive --max-live-buy-notional-usd.")
+    if args.buy_only and not args.live:
+        parser.error("--buy-only requires --live.")
     run_morning_routine(
         live_order=args.live,
         max_live_buy_notional_usd=args.max_live_buy_notional_usd,
+        live_buy_only=args.buy_only,
     )
 
 

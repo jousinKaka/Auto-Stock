@@ -48,7 +48,11 @@ jobs:
           AUTO_STOCK_STATE_DIR: /home/ubuntu/.local/state/auto-stock
           PYTHONIOENCODING: 'utf-8'
         run: |
-          python morning_routine.py --live --max-live-buy-notional-usd "${{ vars.LIVE_BUY_LIMIT_USD }}"
+          if [ "$(TZ=Asia/Seoul date +%F)" = "2026-10-19" ]; then
+            python morning_routine.py --live --buy-only --max-live-buy-notional-usd "${{ vars.LIVE_BUY_LIMIT_USD }}"
+          else
+            python morning_routine.py --live --max-live-buy-notional-usd "${{ vars.LIVE_BUY_LIMIT_USD }}"
+          fi
 
       - name: Run Auto Stock Pipeline (Dry-Run)
         if: github.event_name != 'schedule' || github.event.schedule != '0 11 * * 1-5' || vars.ENABLE_LIVE_TRADING != 'true' || vars.LIVE_BUY_LIMIT_USD == ''

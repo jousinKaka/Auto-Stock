@@ -16,7 +16,7 @@ from agents.agent2_strategy import (
     StrategyState,
 )
 from agents.agent7_execution import TossExecutionAgent
-from morning_routine import _sync_strategy_cash
+from morning_routine import _buy_only_plan, _sync_strategy_cash
 from services.market_data import extract_daily_closes
 from services.toss_client import TossSecuritiesClient, TossToken
 
@@ -150,6 +150,38 @@ def _sample_order_plan():
             ),
         ],
     )
+
+
+def test_buy_only_plan_excludes_sells_without_mutating_generated_plan():
+    plan = _sample_order_plan()
+
+    buy_only = _buy_only_plan(plan)
+
+    assert len(buy_only.orders) == 2
+    assert all(order.side == OrderSide.BUY for order in buy_only.orders)
+    assert len(plan.orders) == 3
+    assert any(order.side == OrderSide.SELL for order in plan.orders)
+
+
+def test_buy_only_live_plan_does_not_require_sell_holdings(tmp_path):
+    class EmptyHoldingsExecutionClient(FakeExecutionClient):
+        def get_holdings(self):
+            return {"items": []}
+
+    client = EmptyHoldingsExecutionClient()
+    agent = TossExecutionAgent(
+        client=client,
+        dry_run=False,
+        max_live_buy_notional_usd=1000,
+        state_dir=tmp_path,
+    )
+    try:
+        result = agent.execute_order_plan(_buy_only_plan(_sample_order_plan()))
+    finally:
+        client.http_client.close()
+
+    assert result.successful_orders_count == 2
+    assert [order["side"] for order in client.orders] == ["BUY", "BUY"]
 
 
 def test_strategy_cash_uses_budget_less_cost_basis_for_selected_cycle():
