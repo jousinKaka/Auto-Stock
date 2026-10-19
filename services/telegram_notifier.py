@@ -69,20 +69,35 @@ class TelegramNotifier:
         soxx_price: float = 0.0,
         soxx_rsi: float = 0.0,
         macro_regime: str = "",
+        routine_slot: str = "morning",
+        live_order: bool = False,
+        live_buy_only: bool = False,
     ) -> bool:
-        """Format and send the daily morning briefing."""
+        """Format and send the morning or evening routine briefing."""
         if not self.is_configured:
             return False
 
+        if routine_slot not in {"morning", "evening"}:
+            raise ValueError(f"Unknown routine slot: {routine_slot!r}")
+
         pnl_icon = "🟢" if record.unrealized_pnl >= 0 else "🔴"
         risk_icon = {"GREEN": "🟢", "YELLOW": "🟡", "ORANGE": "🟠", "RED": "🔴"}.get(risk_level, "⚪")
+        is_evening = routine_slot == "evening"
+        time_label = "20:07 KST 저녁" if is_evening else "09:07 KST 아침"
+        run_mode = (
+            "실거래 · 매수 전용" if live_order and live_buy_only
+            else "실거래" if live_order
+            else "Dry-Run"
+        )
+        account_section = "현재 계좌 현황" if is_evening else "밤사이 체결 정산 및 계좌 현황"
+        order_section = "오늘 저녁 주문 계획" if is_evening else "오늘의 To-Do 주문표"
 
         # 1. Header & Overnight Execution
         msg_lines = [
-            f"🚀 <b>[SOXL 무한매수 V4.0] 09:00 AM 일일 리포트</b>",
+            f"🚀 <b>[SOXL 무한매수 V4.0] {time_label} 루틴 ({run_mode})</b>",
             f"📅 <b>기준일자</b>: {record.date} | <b>회차</b>: #{record.cycle} | <b>모드</b>: {record.mode}",
             "",
-            f"<b>💼 어제까지의 결제 & 계좌 현황</b>",
+            f"<b>💼 {account_section}</b>",
             f"• <b>진행도 (T값)</b>: <code>{record.T_after:.2f} / 40</code> ({'전반전' if record.T_after < 20 else '후반전'})",
             f"• <b>보유 주식</b>: <b>{record.total_shares_after}주</b> (평단가: <b>${record.avg_price_after:.2f}</b>)",
             f"• <b>현재가</b>: <b>${record.current_close:.2f}</b> ({((record.current_close - record.prev_close)/record.prev_close)*100:+.2f}%)",
@@ -108,7 +123,7 @@ class TelegramNotifier:
         # 2. Today's Order Sheet
         msg_lines.extend([
             "",
-            f"<b>🎯 오늘의 To-Do 주문표 (1회 매수금: ${order_plan.one_unit_cash:.2f})</b>",
+            f"<b>🎯 {order_section} (1회 매수금: ${order_plan.one_unit_cash:.2f})</b>",
             f"• <b>별지점</b>: ${order_plan.star_price:.2f} | <b>익절목표가</b>: ${order_plan.target_sell_price:.2f}",
             "",
         ])

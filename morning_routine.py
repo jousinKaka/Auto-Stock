@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import sys
 from datetime import datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import yfinance as yf
 from rich.console import Console
@@ -89,8 +91,14 @@ def run_morning_routine(
 
     today_str = datetime.now().strftime("%Y-%m-%d")
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    routine_slot = os.environ.get("AUTO_STOCK_ROUTINE")
+    if routine_slot is None:
+        routine_slot = "evening" if datetime.now(ZoneInfo("Asia/Seoul")).hour >= 12 else "morning"
+    if routine_slot not in {"morning", "evening"}:
+        raise ValueError(f"AUTO_STOCK_ROUTINE must be 'morning' or 'evening', got {routine_slot!r}.")
+    routine_time_label = "20:07 KST 저녁" if routine_slot == "evening" else "09:07 KST 아침"
 
-    console.print(f"\n[bold cyan]🌅 [09:00 AM 모닝 루틴 시작] SOXL 무한매수 V4.0 자동화 ({now_str})[/bold cyan]\n")
+    console.print(f"\n[bold cyan]🌅 [{routine_time_label} 루틴 시작] SOXL 무한매수 V4.0 자동화 ({now_str})[/bold cyan]\n")
 
     journal_agent = ExecutionJournalAgent()
     history = journal_agent.load_history()
@@ -365,7 +373,7 @@ def run_morning_routine(
         unrealized_return_pct=round(unrealized_pct, 2),
         total_equity=round(total_equity, 2),
         investment_rationale=(
-            f"09:00 AM 정기 루틴: 전일 체결 정산 후 T값 {state.T:.2f} 기준으로 "
+            f"{routine_time_label} 정기 루틴: 전일 체결 정산 후 T값 {state.T:.2f} 기준으로 "
             f"오늘의 1회 매수금 ${order_plan.one_unit_cash:.2f} 주문표 생성 및 {mode_tag} 완료."
             + (" (사용자 요청으로 매수 주문만 포함)" if live_buy_only else "")
         ),
@@ -409,6 +417,9 @@ def run_morning_routine(
             soxx_price=semi_res.soxx_price,
             soxx_rsi=semi_res.rsi_14,
             macro_regime=macro_res.overall_regime,
+            routine_slot=routine_slot,
+            live_order=live_order,
+            live_buy_only=live_buy_only,
         )
         if tg_ok:
             console.print("  ✔ [green]텔레그램 일일 리포트 발송 완료![/green]")
@@ -417,7 +428,7 @@ def run_morning_routine(
     else:
         console.print("  [dim]💡 텔레그램 알림 미설정 (.env에 토큰과 Chat ID 설정 시 매일 아침 자동 전송)[/dim]")
 
-    console.print("[bold green]🎉 09:00 AM 모닝 루틴이 완벽하게 완료되었습니다![/bold green]\n")
+    console.print(f"[bold green]🎉 {routine_time_label} 루틴이 완료되었습니다![/bold green]\n")
 
 
 def main():

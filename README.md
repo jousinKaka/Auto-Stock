@@ -58,19 +58,20 @@ c:\Auto Stock\
 - 7개 에이전트가 순차적으로 실행되어 최근 완료된 SOXL 일봉 종가와 계좌 상태를 기준으로 주문표를 산출하고, 리스크를 진단한 뒤 모의 주문을 접수합니다.
 - `data/reports/YYYY-MM-DD_SOXL_report.md`에 당일 일지가 자동 생성됩니다.
 
-### 2. 매일 아침 09:00 AM 모닝 루틴 & Windows 작업 스케줄러
+### 2. 매일 아침 09:07 AM 모닝 루틴 & Windows 작업 스케줄러
 ```powershell
 .\.venv\Scripts\python.exe morning_routine.py
 ```
-- 매일 아침 9시(월~금) Windows 작업 스케줄러(`AutoStock_Morning_Routine`)에 의해 자동 실행됩니다.
+- GitHub Actions 아침 예약은 평일 한국시간 09:07에 실행됩니다. 별도 Windows 작업 스케줄러(`AutoStock_Morning_Routine`)를 사용하는 경우 해당 작업 시간도 직접 조정해야 합니다.
 - 전일 야간 체결 내역 정산 -> T값/평단가 갱신 -> 오늘 자 To-Do 주문표 산출 -> 일일 리포트 저장 -> 텔레그램 발송이 원스톱으로 처리됩니다.
 
 ### 3. GitHub Actions live-trading safeguards
 - GitHub Actions runs on the Oracle self-hosted runner. Morning schedules and manual dispatch default to Dry-Run. A manual live run requires explicitly checking `confirm_live_buy_only` in the workflow dispatch form.
-- The 20:00 KST schedule and an explicitly confirmed manual buy-only dispatch can enter live mode, and only when the repository Actions variable `ENABLE_LIVE_TRADING` is exactly `true`.
+- The 20:07 KST schedule and an explicitly confirmed manual buy-only dispatch can enter live mode, and only when the repository Actions variable `ENABLE_LIVE_TRADING` is exactly `true`.
 - Live mode additionally requires a positive `LIVE_BUY_LIMIT_USD`; the full planned buy notional must fit under that limit and within Toss USD buying power before any order is sent.
 - Before sending, the executor blocks on any open SOXL order and any same-day closed SOXL buy with a positive filled quantity; canceled/unfilled closed orders and closed sells do not block. It also checks current holdings for sells and creates a persistent per-day lock under `AUTO_STOCK_STATE_DIR`. Failed preflight or a repeated attempt blocks the plan. Inspect Toss order history before manually removing a lock.
-- The 2026-10-19 20:00 KST scheduled live run is explicitly buy-only (`--buy-only`) because the user's SOXL share transfer is pending. This one-date workflow branch excludes all planned sells; subsequent dates use the normal live order plan.
+- The 2026-10-19 20:07 KST scheduled live run is explicitly buy-only (`--buy-only`) because the user's SOXL share transfer is pending. This one-date workflow branch excludes all planned sells; subsequent dates use the normal live order plan.
+- A temporary 21:07 KST schedule check is date-gated to 2026-10-19 and runs Dry-Run only; remove its temporary cron entry after verifying that run.
 - Live order submission is sequential and cannot be rolled back atomically. If a broker/network error occurs after some submissions, inspect Toss order history before any retry.
 - Do not enable live trading until the account, generated order sheet, and configured buy limit have been reviewed.
 - For the currently recorded strategy cycle only, `cash_basis_cycle` calculates strategy cash as `TOTAL_BUDGET_USD - (SOXL shares × average price)` instead of replacing it with Toss buying power. The current ledger is initialized at approximately $18,180 against the $30,000 budget. Reports show this modeled strategy cash separately from actual Toss USD buying power; live-order preflight still checks the actual broker buying power. The cash basis mode ends automatically when the recorded cycle changes.
