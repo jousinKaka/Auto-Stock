@@ -52,3 +52,4 @@ jobs:
           git add data/trade_history.json data/reports/
           git diff --staged --quiet || git commit -m "chore(auto): update trade ledger and daily report [skip ci]"
           git push
+
