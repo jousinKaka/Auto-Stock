@@ -6,8 +6,6 @@ on:
     - cron: '7 0 * * 1-5'
     # 2) 평일 20:07 KST (11:07 UTC) -> 오늘 밤 주문 접수 & 텔레그램 발송
     - cron: '7 11 * * 1-5'
-    # Temporary: 2026-10-19 only, verify scheduled execution at 21:07 KST (12:07 UTC).
-    - cron: '7 12 * * 1-5'
   workflow_dispatch:
     inputs:
       confirm_live_buy_only:
@@ -68,27 +66,8 @@ jobs:
             python morning_routine.py --live --max-live-buy-notional-usd "${{ vars.LIVE_BUY_LIMIT_USD }}"
           fi
 
-      - name: Run One-Time 21:07 KST Schedule Check (Dry-Run)
-        if: ${{ github.event_name == 'schedule' && github.event.schedule == '7 12 * * 1-5' }}
-        env:
-          TOSS_CLIENT_ID: ${{ secrets.TOSS_CLIENT_ID }}
-          TOSS_CLIENT_SECRET: ${{ secrets.TOSS_CLIENT_SECRET }}
-          TOSS_ACCOUNT_SEQ: ${{ secrets.TOSS_ACCOUNT_SEQ }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TOTAL_BUDGET_USD: ${{ vars.TOTAL_BUDGET_USD || '30000.0' }}
-          AUTO_STOCK_STATE_DIR: /home/ubuntu/.local/state/auto-stock
-          PYTHONIOENCODING: 'utf-8'
-          AUTO_STOCK_ROUTINE: evening
-        run: |
-          if [ "$(TZ=Asia/Seoul date +%F)" = "2026-10-19" ]; then
-            python morning_routine.py
-          else
-            echo "Temporary 21:07 KST schedule check is for 2026-10-19 only; skipping pipeline."
-          fi
-
       - name: Run Auto Stock Pipeline (Dry-Run)
-        if: ${{ github.event.schedule != '7 12 * * 1-5' && !((github.event_name == 'schedule' && github.event.schedule == '7 11 * * 1-5' && vars.ENABLE_LIVE_TRADING == 'true' && vars.LIVE_BUY_LIMIT_USD != '') || (github.event_name == 'workflow_dispatch' && inputs.confirm_live_buy_only == true && vars.ENABLE_LIVE_TRADING == 'true' && vars.LIVE_BUY_LIMIT_USD != '')) }}
+        if: ${{ !((github.event_name == 'schedule' && github.event.schedule == '7 11 * * 1-5' && vars.ENABLE_LIVE_TRADING == 'true' && vars.LIVE_BUY_LIMIT_USD != '') || (github.event_name == 'workflow_dispatch' && inputs.confirm_live_buy_only == true && vars.ENABLE_LIVE_TRADING == 'true' && vars.LIVE_BUY_LIMIT_USD != '')) }}
         env:
           TOSS_CLIENT_ID: ${{ secrets.TOSS_CLIENT_ID }}
           TOSS_CLIENT_SECRET: ${{ secrets.TOSS_CLIENT_SECRET }}
