@@ -1,4 +1,4 @@
-"""Morning Routine: 09:00 AM Daily Automated Stock Manager.
+"""Morning and evening routine for the daily automated stock manager.
 
 1. Settles overnight US trade executions from Toss Securities.
 2. Recalculates T-value, cash runway, average price, and realized/unrealized PnL.
@@ -432,7 +432,7 @@ def run_morning_routine(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Auto Stock 09:00 AM Daily Routine")
+    parser = argparse.ArgumentParser(description="Auto Stock morning/evening routine")
     parser.add_argument("--live", action="store_true", help="Submit actual orders to Toss Securities OpenAPI")
     parser.add_argument(
         "--buy-only",
