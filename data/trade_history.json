@@ -1,0 +1,32 @@
+[
+  {
+    "date": "2026-10-19",
+    "cycle": 1,
+    "ticker": "SOXL",
+    "prev_close": 100.25,
+    "current_close": 100.25,
+    "T_before": 15.78,
+    "T_after": 15.78,
+    "mode": "NORMAL",
+    "total_shares_before": 95,
+    "total_shares_after": 95,
+    "avg_price_before": 124.5713,
+    "avg_price_after": 124.5713,
+    "remaining_cash_before": 18165.73,
+    "remaining_cash_after": 18165.73,
+    "bought_shares": 0,
+    "bought_amount": 0.0,
+    "sold_shares": 0,
+    "sold_amount": 0.0,
+    "realized_pnl": 0.0,
+    "unrealized_pnl": -2310.52,
+    "unrealized_return_pct": -19.52,
+    "total_equity": 27689.48,
+    "investment_rationale": "09:00 AM 정기 루틴: 전일 체결 정산 후 T값 15.78 기준으로 오늘의 1회 매수금 $750.03 주문표 생성 및 모의 접수 (Dry-Run) 완료.",
+    "notes": [
+      "야간 체결: 매수 0주 / 매도 0주",
+      "매크로: RISK_ON (위험자산 선호 / 완만한 상승 우호 환경) | 반도체: DEEP_CORRECTION",
+      "리스크 등급: GREEN"
+    ]
+  }
+]
