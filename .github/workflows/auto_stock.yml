@@ -6,7 +6,13 @@ on:
     - cron: '0 0 * * 1-5'
     # 2) 매일 저녁 20:00 KST (11:00 UTC, 월~금) -> 오늘 밤 To-Do 매매 주문 접수 & 텔레그램 발송
     - cron: '0 11 * * 1-5'
-  workflow_dispatch: # 깃허브 웹 화면에서 "Run workflow" 버튼으로 수동 즉시 실행 가능
+  workflow_dispatch:
+    inputs:
+      confirm_live_buy_only:
+        description: "Explicitly confirm a live buy-only run (otherwise Dry-Run)"
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -37,7 +43,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run Auto Stock Pipeline (Live, Evening Schedule Only)
-        if: github.event_name == 'schedule' && github.event.schedule == '0 11 * * 1-5' && vars.ENABLE_LIVE_TRADING == 'true' && vars.LIVE_BUY_LIMIT_USD != ''
+        if: ${{ (github.event_name == 'schedule' && github.event.schedule == '0 11 * * 1-5' && vars.ENABLE_LIVE_TRADING == 'true' && vars.LIVE_BUY_LIMIT_USD != '') || (github.event_name == 'workflow_dispatch' && inputs.confirm_live_buy_only == true && vars.ENABLE_LIVE_TRADING == 'true' && vars.LIVE_BUY_LIMIT_USD != '') }}
         env:
           TOSS_CLIENT_ID: ${{ secrets.TOSS_CLIENT_ID }}
           TOSS_CLIENT_SECRET: ${{ secrets.TOSS_CLIENT_SECRET }}
@@ -47,15 +53,16 @@ jobs:
           TOTAL_BUDGET_USD: ${{ vars.TOTAL_BUDGET_USD || '30000.0' }}
           AUTO_STOCK_STATE_DIR: /home/ubuntu/.local/state/auto-stock
           PYTHONIOENCODING: 'utf-8'
+          CONFIRM_LIVE_BUY_ONLY: ${{ inputs.confirm_live_buy_only }}
         run: |
-          if [ "$(TZ=Asia/Seoul date +%F)" = "2026-10-19" ]; then
+          if [ "$CONFIRM_LIVE_BUY_ONLY" = "true" ] || [ "$(TZ=Asia/Seoul date +%F)" = "2026-10-19" ]; then
             python morning_routine.py --live --buy-only --max-live-buy-notional-usd "${{ vars.LIVE_BUY_LIMIT_USD }}"
           else
             python morning_routine.py --live --max-live-buy-notional-usd "${{ vars.LIVE_BUY_LIMIT_USD }}"
           fi
 
       - name: Run Auto Stock Pipeline (Dry-Run)
-        if: github.event_name != 'schedule' || github.event.schedule != '0 11 * * 1-5' || vars.ENABLE_LIVE_TRADING != 'true' || vars.LIVE_BUY_LIMIT_USD == ''
+        if: ${{ !((github.event_name == 'schedule' && github.event.schedule == '0 11 * * 1-5' && vars.ENABLE_LIVE_TRADING == 'true' && vars.LIVE_BUY_LIMIT_USD != '') || (github.event_name == 'workflow_dispatch' && inputs.confirm_live_buy_only == true && vars.ENABLE_LIVE_TRADING == 'true' && vars.LIVE_BUY_LIMIT_USD != '')) }}
         env:
           TOSS_CLIENT_ID: ${{ secrets.TOSS_CLIENT_ID }}
           TOSS_CLIENT_SECRET: ${{ secrets.TOSS_CLIENT_SECRET }}

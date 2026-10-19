@@ -66,8 +66,8 @@ c:\Auto Stock\
 - 전일 야간 체결 내역 정산 -> T값/평단가 갱신 -> 오늘 자 To-Do 주문표 산출 -> 일일 리포트 저장 -> 텔레그램 발송이 원스톱으로 처리됩니다.
 
 ### 3. GitHub Actions live-trading safeguards
-- GitHub Actions runs on the Oracle self-hosted runner. Morning schedules and manual dispatch always use Dry-Run.
-- Only the 20:00 KST schedule can enter live mode, and only when the repository Actions variable `ENABLE_LIVE_TRADING` is exactly `true`.
+- GitHub Actions runs on the Oracle self-hosted runner. Morning schedules and manual dispatch default to Dry-Run. A manual live run requires explicitly checking `confirm_live_buy_only` in the workflow dispatch form.
+- The 20:00 KST schedule and an explicitly confirmed manual buy-only dispatch can enter live mode, and only when the repository Actions variable `ENABLE_LIVE_TRADING` is exactly `true`.
 - Live mode additionally requires a positive `LIVE_BUY_LIMIT_USD`; the full planned buy notional must fit under that limit and within Toss USD buying power before any order is sent.
 - Before sending, the executor blocks on any open SOXL order and any same-day closed SOXL buy with a positive filled quantity; canceled/unfilled closed orders and closed sells do not block. It also checks current holdings for sells and creates a persistent per-day lock under `AUTO_STOCK_STATE_DIR`. Failed preflight or a repeated attempt blocks the plan. Inspect Toss order history before manually removing a lock.
 - The 2026-10-19 20:00 KST scheduled live run is explicitly buy-only (`--buy-only`) because the user's SOXL share transfer is pending. This one-date workflow branch excludes all planned sells; subsequent dates use the normal live order plan.
