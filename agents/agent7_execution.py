@@ -108,12 +108,45 @@ class TossExecutionAgent:
                         f"Toss {status.lower()} order-history response has an invalid orders field; "
                         "no planned orders were submitted."
                     )
-                if orders:
+                if status == "OPEN" and orders:
                     raise RuntimeError(
-                        f"Found existing {status.lower()} SOXL orders"
-                        + (f" for {order_plan.date}" if status == "CLOSED" else "")
-                        + "; review/cancel them before live automation. No planned orders were submitted."
+                        "Found existing open SOXL orders; review/cancel them before live automation. "
+                        "No planned orders were submitted."
                     )
+                if status == "CLOSED":
+                    for order in orders:
+                        side = str(order.get("side", "")).upper()
+                        if side not in {"BUY", "SELL"}:
+                            raise RuntimeError(
+                                "Toss closed-order history has an unknown order side; "
+                                "no planned orders were submitted."
+                            )
+                        if side != "BUY":
+                            continue
+
+                        execution = order.get("execution")
+                        if not isinstance(execution, dict) or "filledQuantity" not in execution:
+                            raise RuntimeError(
+                                "Toss closed buy order has no filled quantity; "
+                                "inspect order history before retrying. No planned orders were submitted."
+                            )
+                        try:
+                            filled_quantity = float(execution["filledQuantity"])
+                        except (TypeError, ValueError) as exc:
+                            raise RuntimeError(
+                                "Toss closed buy order has an invalid filled quantity; "
+                                "inspect order history before retrying. No planned orders were submitted."
+                            ) from exc
+                        if not math.isfinite(filled_quantity) or filled_quantity < 0:
+                            raise RuntimeError(
+                                "Toss closed buy order has an invalid filled quantity; "
+                                "inspect order history before retrying. No planned orders were submitted."
+                            )
+                        if filled_quantity > 0:
+                            raise RuntimeError(
+                                f"Found a same-day filled SOXL buy order for {order_plan.date}; "
+                                "no planned orders were submitted."
+                            )
                 if not result.get("hasNext"):
                     break
                 cursor = result.get("nextCursor")

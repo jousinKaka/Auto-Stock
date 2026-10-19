@@ -299,9 +299,16 @@ def test_live_execution_blocks_existing_orders_and_replay(tmp_path):
     assert client.orders == []
 
 
-def test_live_execution_blocks_closed_same_day_orders(tmp_path):
+def test_live_execution_allows_canceled_unfilled_closed_buy_orders(tmp_path):
     client = FakeExecutionClient()
-    client.closed_orders = [{"orderId": "existing-closed-order"}]
+    client.closed_orders = [
+        {
+            "orderId": "canceled-order",
+            "side": "BUY",
+            "status": "CANCELED",
+            "execution": {"filledQuantity": 0},
+        }
+    ]
     agent = TossExecutionAgent(
         client=client,
         dry_run=False,
@@ -309,7 +316,74 @@ def test_live_execution_blocks_closed_same_day_orders(tmp_path):
         state_dir=tmp_path,
     )
     try:
-        with pytest.raises(RuntimeError, match="existing closed SOXL orders for 2026-10-19"):
+        result = agent.execute_order_plan(_sample_order_plan())
+    finally:
+        client.http_client.close()
+
+    assert result.successful_orders_count == 3
+    assert len(client.orders) == 3
+
+
+def test_live_execution_blocks_same_day_filled_buy_order(tmp_path):
+    client = FakeExecutionClient()
+    client.closed_orders = [
+        {
+            "orderId": "filled-order",
+            "side": "BUY",
+            "status": "CLOSED",
+            "execution": {"filledQuantity": "1"},
+        }
+    ]
+    agent = TossExecutionAgent(
+        client=client,
+        dry_run=False,
+        max_live_buy_notional_usd=1000,
+        state_dir=tmp_path,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="same-day filled SOXL buy order"):
+            agent.execute_order_plan(_sample_order_plan())
+    finally:
+        client.http_client.close()
+
+    assert client.orders == []
+
+
+def test_live_execution_ignores_closed_sell_fills(tmp_path):
+    client = FakeExecutionClient()
+    client.closed_orders = [
+        {
+            "orderId": "filled-sell-order",
+            "side": "SELL",
+            "status": "CLOSED",
+            "execution": {"filledQuantity": "1"},
+        }
+    ]
+    agent = TossExecutionAgent(
+        client=client,
+        dry_run=False,
+        max_live_buy_notional_usd=1000,
+        state_dir=tmp_path,
+    )
+    try:
+        result = agent.execute_order_plan(_sample_order_plan())
+    finally:
+        client.http_client.close()
+
+    assert result.successful_orders_count == 3
+
+
+def test_live_execution_fails_closed_when_closed_buy_fill_is_unknown(tmp_path):
+    client = FakeExecutionClient()
+    client.closed_orders = [{"orderId": "unknown-buy", "side": "BUY"}]
+    agent = TossExecutionAgent(
+        client=client,
+        dry_run=False,
+        max_live_buy_notional_usd=1000,
+        state_dir=tmp_path,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="no filled quantity"):
             agent.execute_order_plan(_sample_order_plan())
     finally:
         client.http_client.close()
