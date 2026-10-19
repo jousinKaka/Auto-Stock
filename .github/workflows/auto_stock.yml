@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   trade_and_report:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, toss-static-ip]
 
     steps:
       - name: Checkout Repository
@@ -52,4 +52,3 @@ jobs:
           git add data/trade_history.json data/reports/
           git diff --staged --quiet || git commit -m "chore(auto): update trade ledger and daily report [skip ci]"
           git push
-
