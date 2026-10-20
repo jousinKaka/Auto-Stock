@@ -50,6 +50,10 @@ Agents 4 through 6 use Yahoo Finance data and report the retrieval time, complet
 12. **체결 정산**: 체결 수량·가격과 주문 유형을 주문 내역에서 읽어 T값을 갱신하고, 정산한 주문 ID를 기록해 같은 체결을 재실행 때 중복 반영하지 않습니다. 계좌 조회 오류나 기준 종가 누락 시 오래된 값으로 주문표를 만들지 않습니다.
 13. **완료된 거래일 종가**: 미국 동부시간 16:00 이후에는 당일 종가를 사용하고, 장중에는 오늘의 진행 중 가격봉을 제외합니다.
 
+### 전략 규칙 변경 시 기준 확인
+
+새로 작성하거나 수정하는 Markdown 문서와 저장소 지침은 한글로 작성합니다. 무한매수 전략의 주문 가격·수량, T값, 매수·매도 조건, 회차 전환, 리버스 모드 또는 체결 정산 규칙을 변경할 때는 먼저 [사용자가 지정한 무한매수 규칙 참고 페이지](https://d-capitalism.com/muhan/)의 최신 내용을 확인하고, 독립적으로 산출한 기대값으로 회귀 테스트를 추가해야 합니다. 이 페이지는 자체적으로 독립 해설이라고 밝히며, 규칙 개정 시 라오어 네이버 카페 공지와 책을 우선 출처로 안내합니다. 출처가 모호하거나 서로 다르면 임의로 판단하지 않고 확인을 요청합니다. 상세한 작업 절차는 [AGENTS.md](./AGENTS.md)를 따릅니다.
+
 ---
 
 ## 💻 사용 가이드
@@ -97,13 +101,13 @@ GitHub Actions 예약 대신 서버의 systemd 타이머를 사용합니다. Git
 
 설치 후 실행은 서버의 저장소와 장부에 반영되며 GitHub에 자동 commit/push하지는 않습니다. 코드를 갱신할 때는 서버에서 `git pull --ff-only origin main` 후 설치 스크립트를 다시 실행하세요.
 
-### 3. GitHub Actions live-trading safeguards
-- GitHub Actions no longer has scheduled runs. The workflow can still be started manually; it defaults to Dry-Run. A manual live run requires explicitly checking `confirm_live_buy_only` in the workflow dispatch form.
-- Manual live mode additionally requires the repository Actions variable `ENABLE_LIVE_TRADING` to be exactly `true` and a positive `LIVE_BUY_LIMIT_USD`; the full planned buy notional must fit under that limit and within Toss USD buying power before any order is sent.
-- Before sending, the executor blocks on any open SOXL order and any same-day closed SOXL buy with a positive filled quantity; canceled/unfilled closed orders and closed sells do not block. It also checks current holdings for sells and creates a persistent per-day lock under `AUTO_STOCK_STATE_DIR`. Failed preflight or a repeated attempt blocks the plan. Inspect Toss order history before manually removing a lock.
-- Live order submission is sequential and cannot be rolled back atomically. If a broker/network error occurs after some submissions, inspect Toss order history before any retry.
-- Do not enable live trading until the account, generated order sheet, and configured buy limit have been reviewed.
-- Order-sheet cash uses the current Toss USD buying power whenever the brokerage API is configured; invalid or unavailable buying-power data stops order generation rather than falling back to stale ledger cash. During an active strategy cycle, `strategy_shares_cycle` (or legacy `cash_basis_cycle`) keeps planned strategy shares separate from partial broker transfers; this marker does not determine order cash. Live-order preflight independently checks the current broker buying power and actual holdings before submitting any orders.
+### 3. GitHub Actions 실거래 안전장치
+- GitHub Actions는 더 이상 정기 실행되지 않습니다. 워크플로는 수동으로 실행할 수 있으며 기본값은 모의 실행(Dry-Run)입니다. 수동 실거래를 실행하려면 워크플로 실행 화면에서 `confirm_live_buy_only`를 명시적으로 선택해야 합니다.
+- 수동 실거래에는 저장소 Actions 변수 `ENABLE_LIVE_TRADING`이 정확히 `true`로 설정되고 `LIVE_BUY_LIMIT_USD`가 양수여야 합니다. 주문을 보내기 전에 예정된 전체 매수 금액이 이 한도와 토스증권의 USD 매수 가능 금액 안에 들어오는지 확인합니다.
+- 주문 제출 전 미체결 SOXL 주문이 있거나, 당일 종료된 SOXL 매수 주문에 실제 체결 수량이 있으면 실행을 차단합니다. 취소되었거나 체결되지 않은 종료 주문 및 종료된 매도 주문은 차단 사유가 아닙니다. 매도 가능 수량도 확인하며 `AUTO_STOCK_STATE_DIR`에 날짜별 실행 잠금을 저장합니다. 사전 점검에 실패했거나 이미 실행한 경우 주문 계획을 차단합니다. 잠금을 직접 삭제하기 전에는 토스증권 주문 내역을 확인하세요.
+- 실거래 주문은 순차적으로 제출되며 한 번에 원자적으로 취소할 수 없습니다. 일부 주문이 제출된 뒤 증권사 또는 네트워크 오류가 발생하면 재시도하기 전에 토스증권 주문 내역을 확인하세요.
+- 계좌, 생성된 주문표, 설정된 매수 한도를 검토하기 전에는 실거래를 활성화하지 마세요.
+- 증권사 API가 설정된 경우 주문표의 현금은 토스증권의 최신 USD 매수 가능 금액을 사용합니다. 매수 가능 금액을 확인할 수 없거나 값이 올바르지 않으면 오래된 장부 현금으로 대체하지 않고 주문표 생성을 중단합니다. 전략 회차가 진행 중일 때 `strategy_shares_cycle`(또는 이전 버전의 `cash_basis_cycle`) 표시는 전략상 보유 수량과 일부 증권사 이체 수량을 구분하며, 주문 현금 계산에는 사용되지 않습니다. 실거래 사전 점검에서도 주문 제출 전에 현재 증권사 매수 가능 금액과 실제 보유 수량을 별도로 확인합니다.
 
 ### 4. 텔레그램 알림 연동 테스트
 ```powershell
