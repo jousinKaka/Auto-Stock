@@ -55,24 +55,18 @@ console = Console(force_terminal=True)
 def _sync_strategy_cash(
     state: StrategyState,
     broker_cash: float,
-    cash_basis_cycle: Optional[int],
-) -> Optional[int]:
-    if cash_basis_cycle == state.cycle:
-        modeled_cash = round(state.initial_budget - state.total_invested, 2)
-        if modeled_cash < 0:
-            raise RuntimeError(
-                f"Cost-basis cash model is negative (${modeled_cash:.2f}); "
-                "review the budget and SOXL holdings before generating orders."
-            )
-        state.remaining_cash = modeled_cash
-        return cash_basis_cycle
-
-    state.remaining_cash = broker_cash
-    return None
+) -> None:
+    if not math.isfinite(broker_cash) or broker_cash < 0:
+        raise RuntimeError(f"Toss USD buying power is invalid: {broker_cash!r}.")
+    state.remaining_cash = round(broker_cash, 2)
 
 
 def _strategy_shares_after_record(record: dict) -> int:
-    if record.get("cash_basis_cycle") == record.get("cycle"):
+    strategy_shares_cycle = record.get(
+        "strategy_shares_cycle",
+        record.get("cash_basis_cycle"),
+    )
+    if strategy_shares_cycle == record.get("cycle"):
         shares = (
             int(record.get("total_shares_before", 0))
             + int(record.get("bought_shares", 0))
@@ -130,9 +124,9 @@ def _sync_strategy_holdings(
     state: StrategyState,
     broker_shares: int,
     broker_average_price: float,
-    cash_basis_cycle: Optional[int],
+    strategy_shares_cycle: Optional[int],
 ) -> bool:
-    if cash_basis_cycle == state.cycle:
+    if strategy_shares_cycle == state.cycle:
         if state.total_shares > 0 and state.avg_price <= 0:
             raise RuntimeError("Active strategy ledger has shares but no valid average price.")
         return False
@@ -259,7 +253,12 @@ def run_morning_routine(
     # 1. Load Last Recorded State
     if history:
         latest = history[-1]
-        cash_basis_cycle = latest.get("cash_basis_cycle")
+        strategy_shares_cycle = latest.get(
+            "strategy_shares_cycle",
+            latest.get("cash_basis_cycle"),
+        )
+        if strategy_shares_cycle != latest.get("cycle"):
+            strategy_shares_cycle = None
         same_day_record = latest.get("date") == today_str
         state = StrategyState(
             ticker=latest.get("ticker", settings.target_ticker),
@@ -285,7 +284,7 @@ def run_morning_routine(
             remaining_cash=settings.total_budget_usd,
             initial_budget=settings.total_budget_usd,
         )
-        cash_basis_cycle = None
+        strategy_shares_cycle = None
 
     # 2. Check Overnight Executions via Toss Securities API
     console.print("[bold yellow]▶ [1/4] 전일 야간 미국장 체결 결과 확인 (토스증권 API)...[/bold yellow]")
@@ -407,9 +406,9 @@ def run_morning_routine(
             state,
             current_broker_shares,
             current_broker_avg,
-            cash_basis_cycle,
+            strategy_shares_cycle,
         )
-        if cash_basis_cycle == state.cycle and current_broker_shares != state.total_shares:
+        if strategy_shares_cycle == state.cycle and current_broker_shares != state.total_shares:
             console.print(
                 "  [yellow]이번 회차 전략 장부 보유량을 유지합니다: "
                 f"{state.total_shares}주 (토스 실계좌 {current_broker_shares}주).[/yellow]"
@@ -419,7 +418,7 @@ def run_morning_routine(
                 "  [yellow]토스 보유내역의 평균 매수가가 유효하지 않아 "
                 f"장부 평단 ${state.avg_price:.2f}을 유지합니다.[/yellow]"
             )
-        cash_basis_cycle = _sync_strategy_cash(state, broker_cash_usd, cash_basis_cycle)
+        _sync_strategy_cash(state, broker_cash_usd)
         console.print(
             f"  ✔ [green]계좌 동기화:[/green] {state.total_shares}주 @ ${state.avg_price:.2f} | "
             f"전략 계산 현금 ${state.remaining_cash:.2f} | "
@@ -558,25 +557,24 @@ def run_morning_routine(
             f"매크로: {macro_res.overall_regime} | 반도체: {semi_res.trend_state}",
             f"리스크 등급: {risk_res.risk_level.value}",
         ],
-        cash_basis_cycle=cash_basis_cycle,
+        strategy_shares_cycle=strategy_shares_cycle,
         broker_cash_usd=broker_cash_usd,
         broker_soxl_shares=broker_soxl_shares,
         settled_order_ids=sorted(set(settled_order_ids)),
     )
     if (
         broker_soxl_shares is not None
-        and cash_basis_cycle == state.cycle
+        and strategy_shares_cycle == state.cycle
         and broker_soxl_shares != state.total_shares
     ):
         record.notes.append(
             "전략 회차 장부 보유량과 토스 실계좌 보유량이 다릅니다. "
             "입고/이체가 완료되어 실제 계좌 수량이 일치하는지 확인하세요."
         )
-    if cash_basis_cycle is not None and broker_cash_usd is not None:
+    if strategy_shares_cycle is not None and broker_cash_usd is not None:
         record.notes.append(
-            f"회차 #{cash_basis_cycle} 전략 계산용 현금은 예산 ${state.initial_budget:.2f}에서 "
-            f"SOXL 보유원가 ${state.total_invested:.2f}를 뺀 값이며, "
-            f"토스 USD 매수 가능 금액은 ${broker_cash_usd:.2f}입니다."
+            f"회차 #{strategy_shares_cycle}의 전략 보유량은 장부 기준으로 유지하며, "
+            f"주문표 현금은 토스 USD 매수 가능 금액 ${broker_cash_usd:.2f}을 사용합니다."
         )
     if live_buy_only:
         record.notes.append("사용자 요청으로 오늘의 실거래 계획에서 매도 주문을 제외하고 매수만 제출합니다.")

@@ -34,7 +34,7 @@ class DailyExecutionRecord(BaseModel):
     
     remaining_cash_before: float
     remaining_cash_after: float
-    cash_basis_cycle: Optional[int] = None
+    strategy_shares_cycle: Optional[int] = None
     broker_cash_usd: Optional[float] = None
     broker_soxl_shares: Optional[int] = None
     settled_order_ids: List[str] = Field(default_factory=list)
@@ -109,7 +109,7 @@ class ExecutionJournalAgent:
             f"| **평균 매수가 (평단)** | ${record.avg_price_before:.2f} | **${record.avg_price_after:.2f}** | ${record.avg_price_after - record.avg_price_before:+.2f} |",
             f"| **현재 종가** | - | **${record.current_close:.2f}** | {((record.current_close - record.prev_close)/record.prev_close)*100:+.2f}% |",
             f"| **평가 손익** | - | **{pnl_badge} ${record.unrealized_pnl:+.2f} ({record.unrealized_return_pct:+.2f}%)** | - |",
-            f"| **전략 계산용 현금 (USD)** | ${record.remaining_cash_before:.2f} | **${record.remaining_cash_after:.2f}** | ${record.remaining_cash_after - record.remaining_cash_before:+.2f} |",
+            f"| **전략 주문 현금 (USD)** | ${record.remaining_cash_before:.2f} | **${record.remaining_cash_after:.2f}** | ${record.remaining_cash_after - record.remaining_cash_before:+.2f} |",
             f"| **총 계좌 평가액** | - | **${record.total_equity:.2f}** | - |",
             f"| **실현 손익 (당일)** | - | **{realized_badge} ${record.realized_pnl:+.2f}** | - |",
             "",

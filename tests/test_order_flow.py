@@ -146,7 +146,7 @@ def test_active_strategy_keeps_ledger_shares_when_broker_has_partial_transfer():
         state,
         broker_shares=7,
         broker_average_price=0.0,
-        cash_basis_cycle=1,
+        strategy_shares_cycle=1,
     )
 
     assert used_broker_holdings is False
@@ -161,7 +161,7 @@ def test_strategy_uses_broker_holdings_after_special_cycle_ends():
         state,
         broker_shares=7,
         broker_average_price=98.65,
-        cash_basis_cycle=1,
+        strategy_shares_cycle=1,
     )
 
     assert used_broker_holdings is True
@@ -384,7 +384,7 @@ def test_buy_only_live_plan_does_not_require_sell_holdings(tmp_path):
     assert [order["side"] for order in client.orders] == ["BUY", "BUY"]
 
 
-def test_strategy_cash_uses_budget_less_cost_basis_for_selected_cycle():
+def test_active_strategy_cash_uses_toss_buying_power():
     state = StrategyState(
         cycle=1,
         T=15.78,
@@ -394,42 +394,16 @@ def test_strategy_cash_uses_budget_less_cost_basis_for_selected_cycle():
         initial_budget=30000.0,
     )
 
-    active_cycle = _sync_strategy_cash(state, broker_cash=17686.86, cash_basis_cycle=1)
+    _sync_strategy_cash(state, broker_cash=17309.45)
 
-    assert active_cycle == 1
-    assert state.remaining_cash == 18165.73
-    plan = InfiniteStrategyAgent(state).generate_daily_orders(prev_close=93.67)
-    main_buy = next(order for order in plan.orders if order.tag == "MERGED_LARGE_NUMBER_BUY")
-    ladder_prices = [
-        order.price for order in plan.orders if order.tag.startswith("LADDER_BUY_")
-    ]
-    assert (main_buy.price, main_buy.quantity) == (104.91, 7)
-    assert ladder_prices == [93.75, 83.33, 75.00, 68.18, 62.50, 57.69, 53.57]
-    assert sum(
-        order.estimated_total for order in plan.orders if order.side == OrderSide.BUY
-    ) == 1228.39
+    assert state.remaining_cash == 17309.45
 
 
-def test_strategy_cash_returns_to_broker_balance_after_cycle_change():
-    state = StrategyState(cycle=2, remaining_cash=17000.0)
+def test_strategy_cash_rejects_invalid_toss_buying_power():
+    state = StrategyState(cycle=1, remaining_cash=17000.0)
 
-    active_cycle = _sync_strategy_cash(state, broker_cash=17686.86, cash_basis_cycle=1)
-
-    assert active_cycle is None
-    assert state.remaining_cash == 17686.86
-
-
-def test_strategy_cash_model_rejects_cost_basis_over_budget():
-    state = StrategyState(
-        cycle=1,
-        total_shares=100,
-        avg_price=310.0,
-        remaining_cash=1000.0,
-        initial_budget=30000.0,
-    )
-
-    with pytest.raises(RuntimeError, match="Cost-basis cash model is negative"):
-        _sync_strategy_cash(state, broker_cash=1000.0, cash_basis_cycle=1)
+    with pytest.raises(RuntimeError, match="Toss USD buying power is invalid"):
+        _sync_strategy_cash(state, broker_cash=-1.0)
 
 
 class FakeExecutionClient(TossSecuritiesClient):
