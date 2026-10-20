@@ -36,6 +36,8 @@ class DailyExecutionRecord(BaseModel):
     remaining_cash_after: float
     cash_basis_cycle: Optional[int] = None
     broker_cash_usd: Optional[float] = None
+    broker_soxl_shares: Optional[int] = None
+    settled_order_ids: List[str] = Field(default_factory=list)
     
     bought_shares: int = 0
     bought_amount: float = 0.0
@@ -117,6 +119,11 @@ class ExecutionJournalAgent:
             f"- **투자 집행 근거**: {record.investment_rationale}",
             "",
         ]
+        if record.broker_soxl_shares is not None:
+            report_lines.insert(
+                8,
+                f"| **토스 실제 SOXL 보유량** | - | **{record.broker_soxl_shares}주** | - |",
+            )
         if record.broker_cash_usd is not None:
             report_lines.insert(
                 12,

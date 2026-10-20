@@ -71,6 +71,130 @@ def _sync_strategy_cash(
     return None
 
 
+def _strategy_shares_after_record(record: dict) -> int:
+    if record.get("cash_basis_cycle") == record.get("cycle"):
+        shares = (
+            int(record.get("total_shares_before", 0))
+            + int(record.get("bought_shares", 0))
+            - int(record.get("sold_shares", 0))
+        )
+        if shares < 0:
+            raise RuntimeError("Recorded strategy holdings are negative; review the trade ledger.")
+        return shares
+    return int(record.get("total_shares_after", 0))
+
+
+def _closed_order_fill(order: dict) -> Optional[tuple[str, str, int, float, float]]:
+    execution = order.get("execution") or {}
+    filled_value = float(execution.get("filledQuantity") or 0)
+    if not math.isfinite(filled_value) or filled_value < 0:
+        raise ValueError(f"Toss order has an invalid filled quantity: {filled_value}.")
+    if filled_value == 0:
+        return None
+
+    quantity = int(filled_value)
+    if quantity != filled_value:
+        raise ValueError(
+            f"Fractional SOXL fills are not supported by the strategy ledger: {filled_value} shares."
+        )
+
+    side = str(order.get("side", "")).upper()
+    if side not in {OrderSide.BUY.value, OrderSide.SELL.value}:
+        raise RuntimeError(f"Unexpected Toss order side in fill history: {side!r}")
+
+    execution_amount = execution.get("filledAmount")
+    average_price = execution.get("averageFilledPrice")
+    fill_amount = float(execution_amount) if execution_amount is not None else None
+    if average_price is not None:
+        fill_price = float(average_price)
+    elif fill_amount is not None:
+        fill_price = round(fill_amount / quantity, 8)
+    else:
+        raise RuntimeError("Toss execution record has no fill price or filled amount.")
+    if execution_amount is not None:
+        if not math.isfinite(fill_amount):
+            raise RuntimeError("Toss execution record has an invalid fill amount.")
+    else:
+        fill_amount = fill_price * quantity
+
+    if not math.isfinite(fill_price) or fill_price <= 0 or not math.isfinite(fill_amount):
+        raise RuntimeError("Toss execution record has an invalid fill price or amount.")
+
+    order_id = order.get("orderId", order.get("id"))
+    if order_id is None or not str(order_id).strip():
+        raise RuntimeError("Toss filled order has no order ID; cannot safely deduplicate settlement.")
+    return str(order_id), side, quantity, fill_price, fill_amount
+
+
+def _sync_strategy_holdings(
+    state: StrategyState,
+    broker_shares: int,
+    broker_average_price: float,
+    cash_basis_cycle: Optional[int],
+) -> bool:
+    if cash_basis_cycle == state.cycle:
+        if state.total_shares > 0 and state.avg_price <= 0:
+            raise RuntimeError("Active strategy ledger has shares but no valid average price.")
+        return False
+
+    if broker_shares > 0:
+        state.total_shares = broker_shares
+        state.avg_price, _ = _resolve_average_price(
+            broker_average_price,
+            state.avg_price,
+        )
+        return True
+
+    if state.total_shares == 0:
+        state.avg_price = 0.0
+    return False
+
+
+def _legacy_settled_order_ids(closed_orders: list[dict], record: dict) -> set[str]:
+    if "settled_order_ids" in record:
+        return set()
+
+    settled_ids: set[str] = set()
+    for side, shares_key, amount_key in (
+        (OrderSide.BUY.value, "bought_shares", "bought_amount"),
+        (OrderSide.SELL.value, "sold_shares", "sold_amount"),
+    ):
+        target_shares = int(record.get(shares_key, 0) or 0)
+        target_amount = round(float(record.get(amount_key, 0) or 0), 2)
+        if target_shares <= 0 and target_amount <= 0:
+            continue
+        if target_shares <= 0 or target_amount <= 0:
+            raise RuntimeError(
+                "Legacy ledger has incomplete fill totals; inspect Toss order history before continuing."
+            )
+
+        matched_shares = 0
+        matched_amount = 0.0
+        side_ids = []
+        for order in closed_orders:
+            fill = _closed_order_fill(order)
+            if fill is None or fill[1] != side:
+                continue
+            order_id, _, quantity, _, amount = fill
+            if matched_shares + quantity > target_shares:
+                break
+            matched_shares += quantity
+            matched_amount = round(matched_amount + amount, 2)
+            side_ids.append(order_id)
+            if matched_shares == target_shares and abs(matched_amount - target_amount) <= 0.02:
+                settled_ids.update(side_ids)
+                break
+        else:
+            matched_shares = -1
+
+        if matched_shares != target_shares or abs(matched_amount - target_amount) > 0.02:
+            raise RuntimeError(
+                "Cannot match previously recorded fills to Toss order IDs; "
+                "inspect the ledger and broker history before settling again."
+            )
+    return settled_ids
+
+
 def _resolve_average_price(
     broker_average_price: float,
     ledger_average_price: float,
@@ -117,14 +241,15 @@ def run_morning_routine(
     if live_buy_only and not live_order:
         raise ValueError("Buy-only mode is available only for live order execution.")
 
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
+    today_str = now_kst.strftime("%Y-%m-%d")
+    now_str = now_kst.strftime("%Y-%m-%d %H:%M:%S")
     routine_slot = os.environ.get("AUTO_STOCK_ROUTINE")
     if routine_slot is None:
-        routine_slot = "evening" if datetime.now(ZoneInfo("Asia/Seoul")).hour >= 12 else "morning"
+        routine_slot = "evening" if now_kst.hour >= 12 else "morning"
     if routine_slot not in {"morning", "evening"}:
         raise ValueError(f"AUTO_STOCK_ROUTINE must be 'morning' or 'evening', got {routine_slot!r}.")
-    routine_time_label = "20:07 KST 저녁" if routine_slot == "evening" else "09:07 KST 아침"
+    routine_time_label = "20:00 KST 저녁" if routine_slot == "evening" else "09:00 KST 아침"
 
     console.print(f"\n[bold cyan]🌅 [{routine_time_label} 루틴 시작] SOXL 무한매수 V4.0 자동화 ({now_str})[/bold cyan]\n")
 
@@ -135,6 +260,7 @@ def run_morning_routine(
     if history:
         latest = history[-1]
         cash_basis_cycle = latest.get("cash_basis_cycle")
+        same_day_record = latest.get("date") == today_str
         state = StrategyState(
             ticker=latest.get("ticker", settings.target_ticker),
             cycle=latest.get("cycle", 1),
@@ -143,12 +269,13 @@ def run_morning_routine(
             large_number_ratio=settings.large_number_ratio,
             T=latest.get("T_after", 0.0),
             avg_price=latest.get("avg_price_after", 0.0),
-            total_shares=latest.get("total_shares_after", 0),
+            total_shares=_strategy_shares_after_record(latest),
             remaining_cash=latest.get("remaining_cash_after", settings.total_budget_usd),
             initial_budget=settings.total_budget_usd,
             mode=StrategyMode(latest.get("mode", StrategyMode.NORMAL.value)),
         )
     else:
+        same_day_record = False
         # Initial default or mid-entry state
         state = StrategyState(
             ticker=settings.target_ticker,
@@ -164,21 +291,29 @@ def run_morning_routine(
     console.print("[bold yellow]▶ [1/4] 전일 야간 미국장 체결 결과 확인 (토스증권 API)...[/bold yellow]")
     client = TossSecuritiesClient()
     
-    overnight_bought_shares = 0
-    overnight_bought_cost = 0.0
-    overnight_sold_shares = 0
-    overnight_sold_revenue = 0.0
-    realized_pnl = 0.0
-    prev_shares = state.total_shares
-    prev_avg_price = state.avg_price
-    prev_T = state.T
-    prev_cash = state.remaining_cash
+    overnight_bought_shares = int(latest.get("bought_shares", 0)) if same_day_record else 0
+    overnight_bought_cost = float(latest.get("bought_amount", 0.0)) if same_day_record else 0.0
+    overnight_sold_shares = int(latest.get("sold_shares", 0)) if same_day_record else 0
+    overnight_sold_revenue = float(latest.get("sold_amount", 0.0)) if same_day_record else 0.0
+    realized_pnl = float(latest.get("realized_pnl", 0.0)) if same_day_record else 0.0
+    settled_order_ids = list(latest.get("settled_order_ids", [])) if same_day_record else []
+    prev_shares = int(latest.get("total_shares_before", state.total_shares)) if same_day_record else state.total_shares
+    prev_avg_price = float(latest.get("avg_price_before", state.avg_price)) if same_day_record else state.avg_price
+    prev_T = float(latest.get("T_before", state.T)) if same_day_record else state.T
+    prev_cash = float(latest.get("remaining_cash_before", state.remaining_cash)) if same_day_record else state.remaining_cash
     broker_cash_usd: Optional[float] = None
+    broker_soxl_shares: Optional[int] = None
 
     if client.is_configured:
         # Closed orders provide actual fill quantities, prices, and LOC/limit types;
         # a holdings delta alone cannot distinguish quarter sells from target sells.
-        if history and latest.get("date", today_str) < today_str:
+        needs_legacy_backfill = (
+            history
+            and same_day_record
+            and "settled_order_ids" not in latest
+            and (overnight_bought_shares > 0 or overnight_sold_shares > 0)
+        )
+        if history and (latest.get("date", today_str) < today_str or needs_legacy_backfill):
             cursor = None
             closed_orders = []
             while True:
@@ -206,29 +341,20 @@ def run_morning_routine(
                     order.get("orderedAt") or "",
                 )
             )
+            already_settled_ids = set(latest.get("settled_order_ids", []))
+            if "settled_order_ids" not in latest:
+                already_settled_ids.update(_legacy_settled_order_ids(closed_orders, latest))
+            settled_order_ids.extend(already_settled_ids)
             filled_buys = []
             filled_sells = []
             for order in closed_orders:
-                execution = order.get("execution") or {}
-                filled_value = float(execution.get("filledQuantity") or 0)
-                if filled_value <= 0:
+                fill = _closed_order_fill(order)
+                if fill is None:
                     continue
-                quantity = int(filled_value)
-                if quantity != filled_value:
-                    raise ValueError(
-                        f"Fractional SOXL fills are not supported by the strategy ledger: {filled_value} shares."
-                    )
-
-                avg_fill_price = execution.get("averageFilledPrice")
-                if avg_fill_price is None:
-                    filled_amount = execution.get("filledAmount")
-                    if filled_amount is None:
-                        raise RuntimeError("Toss execution record has no fill price or filled amount.")
-                    fill_price = float(filled_amount) / quantity
-                else:
-                    fill_price = float(avg_fill_price)
-
-                side = str(order.get("side", "")).upper()
+                order_id, side, quantity, fill_price, _ = fill
+                if order_id in already_settled_ids:
+                    continue
+                settled_order_ids.append(order_id)
                 if side == OrderSide.BUY.value:
                     filled_buys.append((fill_price, quantity, "BROKER_BUY"))
                 elif side == OrderSide.SELL.value:
@@ -244,11 +370,17 @@ def run_morning_routine(
 
             if filled_buys or filled_sells:
                 execution_result = InfiniteStrategyAgent(state).apply_execution(filled_buys, filled_sells)
-                overnight_bought_shares = execution_result["bought_shares"]
-                overnight_sold_shares = execution_result["sold_shares"]
-                overnight_bought_cost = round(sum(price * qty for price, qty, _ in filled_buys), 2)
-                overnight_sold_revenue = round(sum(price * qty for price, qty, _ in filled_sells), 2)
-                realized_pnl = execution_result["realized_pnl"]
+                overnight_bought_shares += execution_result["bought_shares"]
+                overnight_sold_shares += execution_result["sold_shares"]
+                overnight_bought_cost = round(
+                    overnight_bought_cost + sum(price * qty for price, qty, _ in filled_buys),
+                    2,
+                )
+                overnight_sold_revenue = round(
+                    overnight_sold_revenue + sum(price * qty for price, qty, _ in filled_sells),
+                    2,
+                )
+                realized_pnl += execution_result["realized_pnl"]
                 console.print(
                     f"  ✔ [green]전일 체결 내역 반영:[/green] "
                     f"매수 {overnight_bought_shares}주 (${overnight_bought_cost:.2f}), "
@@ -262,6 +394,7 @@ def run_morning_routine(
         items = holdings_resp.get("items", [])
         soxl_item = next((it for it in items if it.get("symbol") == settings.target_ticker), None)
         current_broker_shares = int(soxl_item.get("quantity", 0)) if soxl_item else 0
+        broker_soxl_shares = current_broker_shares
         current_broker_avg = float(soxl_item.get("averagePrice", 0.0)) if soxl_item else 0.0
 
         bp_resp = client.get_buying_power(currency="USD")
@@ -270,19 +403,22 @@ def run_morning_routine(
             raise RuntimeError("Toss buying-power response has no USD cash field.")
         broker_cash_usd = float(raw_cash)
 
-        if current_broker_shares > 0:
-            state.total_shares = current_broker_shares
-            state.avg_price, used_ledger_average = _resolve_average_price(
-                current_broker_avg,
-                state.avg_price,
+        used_broker_holdings = _sync_strategy_holdings(
+            state,
+            current_broker_shares,
+            current_broker_avg,
+            cash_basis_cycle,
+        )
+        if cash_basis_cycle == state.cycle and current_broker_shares != state.total_shares:
+            console.print(
+                "  [yellow]이번 회차 전략 장부 보유량을 유지합니다: "
+                f"{state.total_shares}주 (토스 실계좌 {current_broker_shares}주).[/yellow]"
             )
-            if used_ledger_average:
-                console.print(
-                    "  [yellow]토스 보유내역의 평균 매수가가 유효하지 않아 "
-                    f"장부 평단 ${state.avg_price:.2f}을 유지합니다.[/yellow]"
-                )
-        elif state.total_shares == 0:
-            state.avg_price = 0.0
+        elif used_broker_holdings and current_broker_avg <= 0:
+            console.print(
+                "  [yellow]토스 보유내역의 평균 매수가가 유효하지 않아 "
+                f"장부 평단 ${state.avg_price:.2f}을 유지합니다.[/yellow]"
+            )
         cash_basis_cycle = _sync_strategy_cash(state, broker_cash_usd, cash_basis_cycle)
         console.print(
             f"  ✔ [green]계좌 동기화:[/green] {state.total_shares}주 @ ${state.avg_price:.2f} | "
@@ -379,8 +515,9 @@ def run_morning_routine(
         )
 
     # 7. Journal & Markdown Report Creation (Agent 1)
+    equity_shares = broker_soxl_shares if broker_soxl_shares is not None else state.total_shares
     total_equity = (broker_cash_usd if broker_cash_usd is not None else state.remaining_cash) + (
-        state.total_shares * current_close
+        equity_shares * current_close
     )
     unrealized_pnl, unrealized_pct = _calculate_unrealized_metrics(
         current_close,
@@ -423,7 +560,18 @@ def run_morning_routine(
         ],
         cash_basis_cycle=cash_basis_cycle,
         broker_cash_usd=broker_cash_usd,
+        broker_soxl_shares=broker_soxl_shares,
+        settled_order_ids=sorted(set(settled_order_ids)),
     )
+    if (
+        broker_soxl_shares is not None
+        and cash_basis_cycle == state.cycle
+        and broker_soxl_shares != state.total_shares
+    ):
+        record.notes.append(
+            "전략 회차 장부 보유량과 토스 실계좌 보유량이 다릅니다. "
+            "입고/이체가 완료되어 실제 계좌 수량이 일치하는지 확인하세요."
+        )
     if cash_basis_cycle is not None and broker_cash_usd is not None:
         record.notes.append(
             f"회차 #{cash_basis_cycle} 전략 계산용 현금은 예산 ${state.initial_budget:.2f}에서 "

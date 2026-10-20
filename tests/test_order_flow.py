@@ -1,6 +1,6 @@
 import json
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -19,8 +19,12 @@ from agents.agent7_execution import TossExecutionAgent
 from morning_routine import (
     _buy_only_plan,
     _calculate_unrealized_metrics,
+    _closed_order_fill,
+    _legacy_settled_order_ids,
     _resolve_average_price,
+    _strategy_shares_after_record,
     _sync_strategy_cash,
+    _sync_strategy_holdings,
 )
 from scripts.run_routine import routine_arguments
 from services.market_data import extract_daily_closes
@@ -38,16 +42,43 @@ def test_daily_close_extractor_returns_latest_completed_close():
     assert closes == [91.0, 92.0, 93.67]
 
 
-def test_daily_close_extractor_ignores_current_new_york_date():
-    today_ny = datetime.now(ZoneInfo("America/New_York")).date()
+def test_daily_close_extractor_ignores_current_bar_before_us_market_close():
+    today_ny = datetime(2026, 10, 19, 15, 59, tzinfo=ZoneInfo("America/New_York"))
     closes = extract_daily_closes(
         pd.DataFrame(
             {"Close": [93.67, 100.91]},
-            index=pd.to_datetime([today_ny - timedelta(days=1), today_ny]),
-        )
+            index=pd.to_datetime(["2026-10-16", "2026-10-19"]),
+        ),
+        now=today_ny,
     )
 
     assert closes == [93.67]
+
+
+def test_daily_close_extractor_includes_current_bar_after_us_market_close():
+    market_close = datetime(2026, 10, 19, 16, 0, tzinfo=ZoneInfo("America/New_York"))
+    closes = extract_daily_closes(
+        pd.DataFrame(
+            {"Close": [93.67, 98.65]},
+            index=pd.to_datetime(["2026-10-16", "2026-10-19"]),
+        ),
+        now=market_close,
+    )
+
+    assert closes == [93.67, 98.65]
+
+
+def test_daily_close_extractor_converts_aware_index_to_new_york_date():
+    market_close_utc = datetime(2026, 10, 19, 20, 0, tzinfo=ZoneInfo("UTC"))
+    closes = extract_daily_closes(
+        pd.DataFrame(
+            {"Close": [93.67, 98.65]},
+            index=pd.to_datetime(["2026-10-16 20:00Z", "2026-10-19 20:00Z"]),
+        ),
+        now=market_close_utc,
+    )
+
+    assert closes == [93.67, 98.65]
 
 
 def test_unrealized_metrics_handle_zero_average_price_with_existing_shares():
@@ -61,6 +92,134 @@ def test_invalid_broker_average_price_uses_valid_ledger_average():
 def test_invalid_broker_and_ledger_average_prices_fail_explicitly():
     with pytest.raises(RuntimeError, match="neither the broker nor local ledger"):
         _resolve_average_price(0.0, 0.0)
+
+
+def test_active_cycle_recovers_shares_from_starting_position_and_settled_fills():
+    record = {
+        "cycle": 1,
+        "cash_basis_cycle": 1,
+        "total_shares_before": 95,
+        "total_shares_after": 7,
+        "bought_shares": 7,
+        "sold_shares": 0,
+    }
+
+    assert _strategy_shares_after_record(record) == 102
+
+
+def test_non_active_cycle_uses_recorded_closing_shares():
+    record = {
+        "cycle": 2,
+        "cash_basis_cycle": 1,
+        "total_shares_before": 95,
+        "total_shares_after": 7,
+        "bought_shares": 7,
+        "sold_shares": 0,
+    }
+
+    assert _strategy_shares_after_record(record) == 7
+
+
+def test_legacy_settlement_matches_already_recorded_filled_order():
+    order = {
+        "orderId": "filled-buy-1",
+        "side": "BUY",
+        "execution": {"filledQuantity": "7", "filledAmount": "690.55"},
+    }
+    record = {"bought_shares": 7, "bought_amount": 690.55}
+
+    assert _closed_order_fill(order) == ("filled-buy-1", "BUY", 7, 98.65, 690.55)
+    assert _legacy_settled_order_ids([order], record) == {"filled-buy-1"}
+
+
+def test_legacy_settlement_fails_if_recorded_fills_cannot_be_matched():
+    record = {"bought_shares": 7, "bought_amount": 690.55}
+
+    with pytest.raises(RuntimeError, match="Cannot match previously recorded fills"):
+        _legacy_settled_order_ids([], record)
+
+
+def test_active_strategy_keeps_ledger_shares_when_broker_has_partial_transfer():
+    state = StrategyState(cycle=1, total_shares=102, avg_price=122.79)
+
+    used_broker_holdings = _sync_strategy_holdings(
+        state,
+        broker_shares=7,
+        broker_average_price=0.0,
+        cash_basis_cycle=1,
+    )
+
+    assert used_broker_holdings is False
+    assert state.total_shares == 102
+    assert state.avg_price == 122.79
+
+
+def test_strategy_uses_broker_holdings_after_special_cycle_ends():
+    state = StrategyState(cycle=2, total_shares=102, avg_price=122.79)
+
+    used_broker_holdings = _sync_strategy_holdings(
+        state,
+        broker_shares=7,
+        broker_average_price=98.65,
+        cash_basis_cycle=1,
+    )
+
+    assert used_broker_holdings is True
+    assert state.total_shares == 7
+    assert state.avg_price == 98.65
+
+
+def test_settling_seven_shares_restores_requested_102_share_position():
+    state = StrategyState(
+        cycle=1,
+        T=15.78,
+        total_shares=95,
+        avg_price=124.5713,
+        remaining_cash=18165.73,
+    )
+
+    result = InfiniteStrategyAgent(state).apply_execution(
+        [(98.65, 7, "BROKER_BUY")],
+        [],
+    )
+
+    assert result["new_total_shares"] == 102
+    assert result["new_avg_price"] == 122.79
+    assert result["new_T"] == 16.7
+
+
+def test_order_plan_matches_website_inputs_for_t_value_17():
+    state = StrategyState(
+        T=17,
+        avg_price=122.7924,
+        total_shares=102,
+        remaining_cash=17309.45,
+        initial_budget=30000.0,
+    )
+
+    plan = InfiniteStrategyAgent(state).generate_daily_orders(
+        prev_close=98.65,
+        date_str="2026-10-20",
+    )
+
+    assert plan.one_unit_cash == 752.58
+    assert plan.star_price == 126.48
+    assert plan.target_sell_price == 147.35
+    assert [
+        (order.side.value, order.order_type.value, order.price, order.quantity)
+        for order in plan.orders
+    ] == [
+        ("SELL", "LOC", 126.48, 25),
+        ("SELL", "LIMIT", 147.35, 77),
+        ("BUY", "LOC", 110.49, 6),
+        ("BUY", "LOC", 107.51, 1),
+        ("BUY", "LOC", 94.07, 1),
+        ("BUY", "LOC", 83.62, 1),
+        ("BUY", "LOC", 75.25, 1),
+        ("BUY", "LOC", 68.41, 1),
+        ("BUY", "LOC", 62.71, 1),
+        ("BUY", "LOC", 57.89, 1),
+    ]
 
 
 def test_scheduled_morning_routine_always_uses_dry_run():
@@ -364,12 +523,40 @@ def test_live_execution_blocks_existing_orders_and_replay(tmp_path):
         with pytest.raises(RuntimeError, match="existing open SOXL orders"):
             agent.execute_order_plan(_sample_order_plan())
         client.open_orders = []
-        with pytest.raises(RuntimeError, match="already attempted"):
-            agent.execute_order_plan(_sample_order_plan())
+        result = agent.execute_order_plan(_sample_order_plan())
     finally:
         client.http_client.close()
 
-    assert client.orders == []
+    assert result.successful_orders_count == 3
+    assert len(client.orders) == 3
+
+
+def test_live_preflight_holdings_failure_does_not_leave_execution_lock(tmp_path):
+    class InsufficientHoldingsClient(FakeExecutionClient):
+        def __init__(self):
+            super().__init__()
+            self.available_shares = 0
+
+        def get_holdings(self):
+            return {"items": [{"symbol": "SOXL", "quantity": self.available_shares}]}
+
+    client = InsufficientHoldingsClient()
+    agent = TossExecutionAgent(
+        client=client,
+        dry_run=False,
+        max_live_buy_notional_usd=1000,
+        state_dir=tmp_path,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="exceeding current holdings"):
+            agent.execute_order_plan(_sample_order_plan())
+        client.available_shares = 100
+        result = agent.execute_order_plan(_sample_order_plan())
+    finally:
+        client.http_client.close()
+
+    assert result.successful_orders_count == 3
+    assert len(client.orders) == 3
 
 
 def test_live_execution_allows_canceled_unfilled_closed_buy_orders(tmp_path):
@@ -485,6 +672,8 @@ def test_live_execution_stops_after_first_submission_failure(tmp_path):
     assert result.failed_orders_count == 1
     assert len(result.orders_detail) == 1
     assert len(client.orders) == 1
+    with pytest.raises(RuntimeError, match="already attempted"):
+        agent.execute_order_plan(_sample_order_plan())
 
 
 def test_live_execution_refuses_unconfigured_toss_client():

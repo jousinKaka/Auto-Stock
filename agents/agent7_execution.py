@@ -73,24 +73,6 @@ class TossExecutionAgent:
         ):
             raise ValueError("Live order plan contains an invalid price or quantity.")
 
-        lock_path = self.state_dir / f"live-{order_plan.ticker}-{order_plan.date}.lock"
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError as exc:
-            raise RuntimeError(
-                f"Live execution already attempted for {order_plan.ticker} on "
-                f"{order_plan.date}; inspect Toss orders before removing {lock_path}."
-            ) from exc
-        with os.fdopen(lock_fd, "w", encoding="utf-8") as lock_file:
-            lock_file.write(
-                f"ticker={order_plan.ticker}\n"
-                f"date={order_plan.date}\n"
-                f"planned_buy_notional_usd={buy_notional:.2f}\n"
-                f"planned_orders={len(order_plan.orders)}\n"
-                f"created_at={datetime.now().isoformat()}\n"
-            )
-
         for status in ("OPEN", "CLOSED"):
             cursor = None
             while True:
@@ -180,6 +162,24 @@ class TossExecutionAgent:
             raise RuntimeError(
                 f"Planned SOXL sells total {sell_quantity} shares, exceeding current holdings "
                 f"of {available_shares}; no planned orders were submitted."
+            )
+
+        lock_path = self.state_dir / f"live-{order_plan.ticker}-{order_plan.date}.lock"
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError as exc:
+            raise RuntimeError(
+                f"Live execution already attempted for {order_plan.ticker} on "
+                f"{order_plan.date}; inspect Toss orders before removing {lock_path}."
+            ) from exc
+        with os.fdopen(lock_fd, "w", encoding="utf-8") as lock_file:
+            lock_file.write(
+                f"ticker={order_plan.ticker}\n"
+                f"date={order_plan.date}\n"
+                f"planned_buy_notional_usd={buy_notional:.2f}\n"
+                f"planned_orders={len(order_plan.orders)}\n"
+                f"created_at={datetime.now().isoformat()}\n"
             )
 
     def sync_account_state(self, current_state: StrategyState) -> Tuple[StrategyState, Dict[str, Any]]:
