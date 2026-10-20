@@ -7,7 +7,8 @@ directly to the user's Telegram chat.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from html import escape
+from typing import Optional
 import httpx
 
 from agents.agent1_journal import DailyExecutionRecord
@@ -64,36 +65,31 @@ class TelegramNotifier:
         self,
         record: DailyExecutionRecord,
         order_plan: OrderPlan,
-        risk_headline: str = "",
-        risk_level: str = "",
-        soxx_price: float = 0.0,
-        soxx_rsi: float = 0.0,
-        macro_regime: str = "",
         routine_slot: str = "morning",
         live_order: bool = False,
         live_buy_only: bool = False,
+        execution_summary: str = "",
+        macro_summary: str = "",
+        semi_summary: str = "",
+        fundamental_summary: str = "",
     ) -> bool:
-        """Format and send the morning or evening routine briefing."""
+        """Send an evening order update or a morning settlement and analysis."""
         if not self.is_configured:
             return False
 
         if routine_slot not in {"morning", "evening"}:
             raise ValueError(f"Unknown routine slot: {routine_slot!r}")
 
-        pnl_icon = "🟢" if record.unrealized_pnl >= 0 else "🔴"
-        risk_icon = {"GREEN": "🟢", "YELLOW": "🟡", "ORANGE": "🟠", "RED": "🔴"}.get(risk_level, "⚪")
         is_evening = routine_slot == "evening"
-        time_label = "20:07 KST 저녁" if is_evening else "09:07 KST 아침"
+        time_label = "20:00 KST 저녁" if is_evening else "09:00 KST 아침"
         run_mode = (
             "실거래 · 매수 전용" if live_order and live_buy_only
             else "실거래" if live_order
-            else "Dry-Run"
+            else "Dry-Run" if is_evening
+            else "체결 정산·분석 (주문 없음)"
         )
         account_section = "현재 계좌 현황" if is_evening else "밤사이 체결 정산 및 계좌 현황"
-        order_section = "오늘 저녁 주문 계획" if is_evening else "오늘의 To-Do 주문표"
-
-        # 1. Header & Overnight Execution
-        msg_lines = [
+        account_lines = [
             f"🚀 <b>[SOXL 무한매수 V4.0] {time_label} 루틴 ({run_mode})</b>",
             f"📅 <b>기준일자</b>: {record.date} | <b>회차</b>: #{record.cycle} | <b>모드</b>: {record.mode}",
             "",
@@ -101,48 +97,85 @@ class TelegramNotifier:
             f"• <b>진행도 (T값)</b>: <code>{record.T_after:.2f} / 40</code> ({'전반전' if record.T_after < 20 else '후반전'})",
             f"• <b>보유 주식</b>: <b>{record.total_shares_after}주</b> (평단가: <b>${record.avg_price_after:.2f}</b>)",
             f"• <b>현재가</b>: <b>${record.current_close:.2f}</b> ({((record.current_close - record.prev_close)/record.prev_close)*100:+.2f}%)",
-            f"• <b>평가 손익</b>: {pnl_icon} <b>${record.unrealized_pnl:+.2f} ({record.unrealized_return_pct:+.2f}%)</b>",
+            f"• <b>평가 손익</b>: <b>${record.unrealized_pnl:+.2f} ({record.unrealized_return_pct:+.2f}%)</b>",
             f"• <b>전략 계산용 현금</b>: <b>${record.remaining_cash_after:,.2f}</b>",
             f"• <b>총 자산 가치</b>: <b>${record.total_equity:,.2f}</b>",
         ]
+        if record.broker_soxl_shares is not None:
+            account_lines.insert(
+                -1,
+                f"• <b>토스 실제 SOXL 보유량</b>: <b>{record.broker_soxl_shares}주</b>",
+            )
         if record.broker_cash_usd is not None:
-            msg_lines.insert(
+            account_lines.insert(
                 -1,
                 f"• <b>토스 USD 매수 가능 금액</b>: <b>${record.broker_cash_usd:,.2f}</b>",
             )
 
-        if record.bought_shares > 0 or record.sold_shares > 0:
-            msg_lines.extend([
+        if not is_evening:
+            account_lines.extend([
                 "",
-                f"<b>⚡ 어제 야간 체결 결과</b>",
-                f"• 매수 체결: +{record.bought_shares}주 (${record.bought_amount:.2f})" if record.bought_shares > 0 else "",
-                f"• 매도 체결: -{record.sold_shares}주 (실현손익: ${record.realized_pnl:+.2f})" if record.sold_shares > 0 else "",
+                "<b>⚡ 전날 미국장 체결 정산</b>",
             ])
-            msg_lines = [line for line in msg_lines if line]
+            if record.bought_shares or record.sold_shares:
+                if record.bought_shares:
+                    account_lines.append(
+                        f"• 매수 체결: +{record.bought_shares}주 (${record.bought_amount:.2f})"
+                    )
+                if record.sold_shares:
+                    account_lines.append(
+                        f"• 매도 체결: -{record.sold_shares}주 (${record.sold_amount:.2f})"
+                    )
+                account_lines.append(f"• 실현 손익: ${record.realized_pnl:+.2f}")
+            else:
+                account_lines.append("• 체결된 SOXL 주문이 없습니다.")
+            account_lines.extend([
+                "",
+                "<i>*아침 정산·분석 메시지이며, 주문은 제출하지 않았습니다.*</i>",
+            ])
+            messages = [
+                "\n".join(account_lines),
+                "\n".join([
+                    f"📊 <b>[SOXL 에이전트 분석] {record.date}</b>",
+                    "",
+                    f"<b>Agent 4 · 거시 매크로</b>\n{escape(macro_summary or '분석 요약 없음')}",
+                    "",
+                    f"<b>Agent 5 · 반도체 업황</b>\n{escape(semi_summary or '분석 요약 없음')}",
+                    "",
+                    f"<b>Agent 6 · 주요 기업·실적 일정</b>\n"
+                    f"{escape(fundamental_summary or '분석 요약 없음')}",
+                ]),
+            ]
+        else:
+            order_section = "오늘 저녁 주문 계획"
+            order_lines = [
+                f"🎯 <b>{order_section}</b>",
+                f"• <b>전략 주문 현금</b>: ${record.remaining_cash_after:,.2f}",
+                f"• <b>1회 매수금</b>: ${order_plan.one_unit_cash:.2f}",
+                f"• <b>별지점</b>: ${order_plan.star_price:.2f} | "
+                f"<b>익절목표가</b>: ${order_plan.target_sell_price:.2f}",
+                "",
+            ]
+            for order in order_plan.orders:
+                side_badge = "🔴 매수" if order.side == OrderSide.BUY else "🔵 매도"
+                order_lines.append(
+                    f"{side_badge} <code>{order.order_type.value:5s}</code> | "
+                    f"<b>${order.price:6.2f}</b> | <b>{order.quantity:2d}주</b> "
+                    f"({escape(order.tag)})"
+                )
+            order_lines.extend([
+                "",
+                f"📨 <b>주문 처리 결과</b>: {escape(execution_summary or '결과 요약 없음')}",
+                "<i>접수는 체결 확정을 뜻하지 않습니다. 실제 체결은 다음 날 아침에 정산합니다.</i>",
+            ])
+            messages = ["\n".join(account_lines + [""] + order_lines)]
 
-        # 2. Today's Order Sheet
-        msg_lines.extend([
-            "",
-            f"<b>🎯 {order_section} (1회 매수금: ${order_plan.one_unit_cash:.2f})</b>",
-            f"• <b>별지점</b>: ${order_plan.star_price:.2f} | <b>익절목표가</b>: ${order_plan.target_sell_price:.2f}",
-            "",
-        ])
+        if any(len(message) > 3800 for message in messages):
+            self.logger.error("Telegram routine briefing exceeds the safe message length; no briefing was sent.")
+            return False
 
-        for o in order_plan.orders:
-            side_badge = "🔴 매수" if o.side == OrderSide.BUY else "🔵 매도"
-            msg_lines.append(
-                f"{side_badge} <code>{o.order_type.value:5s}</code> | <b>${o.price:6.2f}</b> | <b>{o.quantity:2d}주</b> ({o.tag})"
-            )
-
-        # 3. Risk & Market Pulse
-        msg_lines.extend([
-            "",
-            f"<b>🛡️ 시장 환경 & 리스크 진단</b>",
-            f"• <b>위험 등급</b>: {risk_icon} <b>[{risk_level}]</b> {risk_headline}",
-            f"• <b>반도체 지수(SOXX)</b>: ${soxx_price:.2f} (RSI: {soxx_rsi:.1f})",
-            f"• <b>거시 매크로</b>: {macro_regime}",
-            "",
-            f"<i>*Auto Stock Multi-Agent System 자동 발송*</i>",
-        ])
-
-        return self.send_message("\n".join(msg_lines), parse_mode="HTML")
+        success = True
+        for message in messages:
+            if not self.send_message(message, parse_mode="HTML"):
+                success = False
+        return success

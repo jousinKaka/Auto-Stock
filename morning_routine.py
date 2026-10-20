@@ -584,6 +584,7 @@ def run_morning_routine(
         order_plan=order_plan,
         macro_summary=macro_res.to_markdown(),
         semi_summary=semi_res.to_markdown(),
+        fundamental_summary=fund_res.to_markdown(),
         risk_summary=risk_res.to_markdown(),
     )
 
@@ -597,14 +598,13 @@ def run_morning_routine(
         tg_ok = tg.send_morning_briefing(
             record=record,
             order_plan=order_plan,
-            risk_headline=risk_res.headline,
-            risk_level=risk_res.risk_level.value,
-            soxx_price=semi_res.soxx_price,
-            soxx_rsi=semi_res.rsi_14,
-            macro_regime=macro_res.overall_regime,
             routine_slot=routine_slot,
             live_order=live_order,
             live_buy_only=live_buy_only,
+            execution_summary=exec_result.summary_message,
+            macro_summary=macro_res.to_markdown(),
+            semi_summary=semi_res.to_markdown(),
+            fundamental_summary=fund_res.to_markdown(),
         )
         if tg_ok:
             console.print("  ✔ [green]텔레그램 일일 리포트 발송 완료![/green]")

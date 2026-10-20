@@ -14,6 +14,16 @@ def extract_daily_closes(
     now: Optional[datetime] = None,
 ) -> List[float]:
     """Return recent non-null closes, including today's bar only after the US close."""
+    close_series = extract_daily_close_series(data, limit=limit, now=now)
+    return [float(value) for value in close_series.tolist()]
+
+
+def extract_daily_close_series(
+    data: pd.DataFrame,
+    limit: Optional[int] = 5,
+    now: Optional[datetime] = None,
+) -> pd.Series:
+    """Return completed, valid daily closes with their original timestamps."""
     if data.empty or "Close" not in data:
         raise ValueError("Daily price data has no Close column or rows.")
 
@@ -42,11 +52,12 @@ def extract_daily_closes(
             if last_date > current_time.date() or same_day_bar_is_incomplete:
                 close_series = close_series.iloc[:-1]
 
-    values = [
-        float(value)
-        for value in close_series.tail(limit).tolist()
-        if math.isfinite(float(value)) and float(value) > 0
-    ]
-    if not values:
+    valid_mask = close_series.map(
+        lambda value: math.isfinite(float(value)) and float(value) > 0
+    )
+    close_series = close_series.loc[valid_mask]
+    if limit is not None:
+        close_series = close_series.tail(limit)
+    if close_series.empty:
         raise ValueError("Daily price data has no valid closing prices.")
-    return values
+    return close_series.astype(float)

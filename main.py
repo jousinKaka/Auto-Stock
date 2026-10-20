@@ -216,6 +216,7 @@ def run_pipeline(dry_run: bool = True) -> None:
         order_plan=order_plan,
         macro_summary=macro_res.to_markdown(),
         semi_summary=semi_res.to_markdown(),
+        fundamental_summary=fund_res.to_markdown(),
         risk_summary=risk_res.to_markdown(),
     )
 

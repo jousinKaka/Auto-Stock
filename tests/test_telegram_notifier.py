@@ -49,24 +49,79 @@ def test_briefing_title_and_order_section_match_routine_slot():
     sent_messages = []
     notifier.send_message = lambda text, parse_mode="HTML": sent_messages.append(text) or True
     try:
-        for slot in ("morning", "evening"):
-            assert notifier.send_morning_briefing(
-                record=_sample_record(),
-                order_plan=_sample_plan(),
-                risk_level="GREEN",
-                routine_slot=slot,
-                live_order=slot == "evening",
-                live_buy_only=slot == "evening",
-            )
+        assert notifier.send_morning_briefing(
+            record=_sample_record(),
+            order_plan=_sample_plan(),
+            routine_slot="morning",
+            macro_summary="금리·달러 요약",
+            semi_summary="SOXX 업황 요약",
+            fundamental_summary="NVDA 실적 요약",
+        )
+        assert notifier.send_morning_briefing(
+            record=_sample_record(),
+            order_plan=_sample_plan(),
+            routine_slot="evening",
+            live_order=True,
+            execution_summary="실거래 총 1건 접수 완료, 0건 실패.",
+        )
     finally:
         notifier.http_client.close()
 
-    assert "09:07 KST 아침 루틴 (Dry-Run)" in sent_messages[0]
+    assert len(sent_messages) == 3
+    assert "09:00 KST 아침 루틴 (체결 정산·분석 (주문 없음))" in sent_messages[0]
     assert "밤사이 체결 정산 및 계좌 현황" in sent_messages[0]
-    assert "오늘의 To-Do 주문표" in sent_messages[0]
-    assert "20:07 KST 저녁 루틴 (실거래 · 매수 전용)" in sent_messages[1]
-    assert "현재 계좌 현황" in sent_messages[1]
-    assert "오늘 저녁 주문 계획" in sent_messages[1]
+    assert "체결된 SOXL 주문이 없습니다" in sent_messages[0]
+    assert "주문표" not in sent_messages[0]
+    assert "금리·달러 요약" in sent_messages[1]
+    assert "SOXX 업황 요약" in sent_messages[1]
+    assert "NVDA 실적 요약" in sent_messages[1]
+    assert "주문 가격" not in sent_messages[1]
+    assert "20:00 KST 저녁 루틴 (실거래)" in sent_messages[2]
+    assert "현재 계좌 현황" in sent_messages[2]
+    assert "오늘 저녁 주문 계획" in sent_messages[2]
+    assert "실거래 총 1건 접수 완료, 0건 실패." in sent_messages[2]
+    assert "실제 체결은 다음 날 아침에 정산합니다" in sent_messages[2]
+
+
+def test_morning_briefing_includes_fills_and_separates_real_holdings():
+    record = _sample_record().model_copy(update={
+        "bought_shares": 7,
+        "bought_amount": 690.55,
+        "broker_soxl_shares": 7,
+    })
+    notifier = TelegramNotifier(bot_token="token", chat_id="chat")
+    sent_messages = []
+    notifier.send_message = lambda text, parse_mode="HTML": sent_messages.append(text) or True
+    try:
+        assert notifier.send_morning_briefing(
+            record=record,
+            order_plan=_sample_plan(),
+            routine_slot="morning",
+        )
+    finally:
+        notifier.http_client.close()
+
+    assert "매수 체결: +7주 ($690.55)" in sent_messages[0]
+    assert "토스 실제 SOXL 보유량" in sent_messages[0]
+    assert "아침 정산·분석 메시지이며, 주문은 제출하지 않았습니다." in sent_messages[0]
+
+
+def test_evening_briefing_rejects_oversized_messages_without_sending():
+    notifier = TelegramNotifier(bot_token="token", chat_id="chat")
+    sent_messages = []
+    notifier.send_message = lambda text, parse_mode="HTML": sent_messages.append(text) or True
+    try:
+        success = notifier.send_morning_briefing(
+            record=_sample_record(),
+            order_plan=_sample_plan(),
+            routine_slot="evening",
+            execution_summary="x" * 4000,
+        )
+    finally:
+        notifier.http_client.close()
+
+    assert success is False
+    assert sent_messages == []
 
 
 def test_briefing_rejects_unknown_routine_slot():

@@ -90,6 +90,7 @@ class ExecutionJournalAgent:
         order_plan: Optional[OrderPlan] = None,
         macro_summary: str = "",
         semi_summary: str = "",
+        fundamental_summary: str = "",
         risk_summary: str = "",
     ) -> str:
         """Generate a comprehensive daily investment report in GitHub Flavored Markdown."""
@@ -143,11 +144,16 @@ class ExecutionJournalAgent:
                 "",
             ])
 
-        if macro_summary or semi_summary:
+        if macro_summary or semi_summary or fundamental_summary:
             report_lines.extend([
-                "## 4. 🌐 시장 환경 및 산업 분석 (Agents 4 & 5)",
+                "## 4. 🌐 시장 환경 및 반도체 기업 분석 (Agents 4-6)",
                 f"### 📈 거시경제 & 유동성:\n{macro_summary}" if macro_summary else "",
-                f"### ⚡ 반도체 업황 & 공급망:\n{semi_summary}" if semi_summary else "",
+                f"### ⚡ 반도체 업황 기술 지표 (Agent 5):\n{semi_summary}" if semi_summary else "",
+                (
+                    f"### 🧾 SOXL 관련 기업 및 실적 캘린더 (Agent 6):\n{fundamental_summary}"
+                    if fundamental_summary
+                    else ""
+                ),
                 "",
             ])
 

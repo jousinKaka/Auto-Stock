@@ -13,8 +13,8 @@ c:\Auto Stock\
 │   ├── agent2_strategy.py      # [Agent 2] 무한매수법 V4.0 계산 엔진 & 백테스터 (주문표 산출)
 │   ├── agent3_risk.py          # [Agent 3] 3배 레버리지 변동성 끌림(Decay) & 현금소진율 감시
 │   ├── agent4_macro.py         # [Agent 4] 10년물 국채금리, DXY, VIX, 시장 유동성 분석
-│   ├── agent5_industry.py      # [Agent 5] 반도체 지수(SOXX) 기술적 사이클 & RSI 진단
-│   ├── agent6_fundamental.py   # [Agent 6] SOXL 편입 상위 기업(NVDA, AVGO 등) 밸류에이션 분석
+│   ├── agent5_industry.py      # [Agent 5] SOXX 완료 일봉 기술적 추세 분석 (주문 신호와 분리)
+│   ├── agent6_fundamental.py   # [Agent 6] 반도체 watchlist 실적 일정·EPS/매출 추정치·체크 지표
 │   └── agent7_execution.py     # [Agent 7] 토스증권 Open API 연동 및 모의/실거래 주문 집행
 ├── services/
 │   └── toss_client.py          # 토스증권 공식 REST API & OAuth 2.0 클라이언트
@@ -29,6 +29,8 @@ c:\Auto Stock\
 ├── requirements.txt            # 의존성 패키지
 └── .env                        # 토스 API 키 및 보안 설정 (.gitignore 대상)
 ```
+
+Agents 5 and 6 use Yahoo Finance data and report the retrieval time, completed-price date, and missing-data notes. Agent 5 does not substitute sample values or infer order signals from sector indicators. Agent 6 covers a curated semiconductor watchlist; it does not claim to represent SOXL's current holdings or weights. Earnings-calendar averages are estimates, may be unavailable or change, and are not used to calculate or submit orders.
 
 ---
 
@@ -91,7 +93,7 @@ GitHub Actions 예약 대신 서버의 systemd 타이머를 사용합니다. Git
    journalctl -u auto-stock@evening.service -n 100 --no-pager
    ```
 
-아침 루틴은 항상 Dry-Run이며, 전일 야간 체결 정산·주문표 생성·리포트 저장·텔레그램 발송을 합니다. 선택된 전략 회차에서는 장부 보유량/평단과 토스 실제 보유량을 따로 표시하며, 주문 전 매도 수량이 토스 실계좌 보유 수량 이내인지 검사합니다. 저녁도 기본은 Dry-Run입니다. 저녁 실거래를 허용하려면 서버 환경 파일에서 `ENABLE_LIVE_TRADING=true`와 양수 `LIVE_BUY_LIMIT_USD`를 설정해야 합니다. 이 경우 기존 실거래 흐름대로 매수·매도 계획을 제출할 수 있으므로, 계좌와 주문표 및 한도를 먼저 검토하세요. 두 루틴은 서버 현지 시간 기준 평일 09:00 및 20:00에 실행됩니다.
+아침 루틴은 항상 주문을 제출하지 않고, 전날 미국장 체결·계좌를 정산해 에이전트 4~6 분석과 함께 텔레그램으로 보냅니다. 내부적으로는 주문표를 산출해 일일 리포트에 기록하지만, 아침 알림에는 주문표를 포함하지 않습니다. 선택된 전략 회차에서는 장부 보유량/평단과 토스 실제 보유량을 따로 표시하며, 주문 전 매도 수량이 토스 실계좌 보유 수량 이내인지 검사합니다. 저녁 루틴은 주문 계획과 주문 접수 결과를 텔레그램으로 보냅니다. 저녁도 기본은 Dry-Run입니다. 저녁 실거래를 허용하려면 서버 환경 파일에서 `ENABLE_LIVE_TRADING=true`와 양수 `LIVE_BUY_LIMIT_USD`를 설정해야 합니다. 이 경우 기존 실거래 흐름대로 매수·매도 계획을 제출할 수 있으므로, 계좌와 주문표 및 한도를 먼저 검토하세요. 주문 접수는 체결 확정이 아니며, 체결은 다음 아침 루틴에서 정산합니다. 두 루틴은 서버 현지 시간 기준 평일 09:00 및 20:00에 실행됩니다.
 
 설치 후 실행은 서버의 저장소와 장부에 반영되며 GitHub에 자동 commit/push하지는 않습니다. 코드를 갱신할 때는 서버에서 `git pull --ff-only origin main` 후 설치 스크립트를 다시 실행하세요.
 
@@ -132,7 +134,7 @@ TOSS_CLIENT_SECRET=발급받은_클라이언트_SECRET
 TOSS_ACCOUNT_SEQ=토스증권_계좌번호_또는_시퀀스
 ```
 
-### 2. 텔레그램 봇 알림 설정 (매일 아침 9시 모닝 리포트 수신)
+### 2. 텔레그램 봇 알림 설정 (평일 아침 9시 체결·분석 및 저녁 8시 주문 리포트 수신)
 1. 텔레그램 앱에서 `@BotFather` 검색 후 `/newbot`으로 봇 생성 및 API Token 복사
 2. 생성한 내 봇 채팅방에 들어가서 `/start` 누르기 (필수)
 3. 내 Chat ID 확인: 텔레그램에서 `@userinfobot` 검색 후 `/start` -> Id 숫자 복사
