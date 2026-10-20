@@ -30,7 +30,7 @@ c:\Auto Stock\
 └── .env                        # 토스 API 키 및 보안 설정 (.gitignore 대상)
 ```
 
-Agents 5 and 6 use Yahoo Finance data and report the retrieval time, completed-price date, and missing-data notes. Agent 5 does not substitute sample values or infer order signals from sector indicators. Agent 6 covers a curated semiconductor watchlist; it does not claim to represent SOXL's current holdings or weights. Earnings-calendar averages are estimates, may be unavailable or change, and are not used to calculate or submit orders.
+Agents 4 through 6 use Yahoo Finance data and report the retrieval time, completed-price date, and missing-data notes. Agent 4 reports `DATA_UNAVAILABLE` instead of substituting sample values or judging the macro regime when a required indicator is missing; its market observations are not trade recommendations. Agent 5 does not substitute sample values or infer order signals from sector indicators. Agent 6 covers a curated semiconductor watchlist; it does not claim to represent SOXL's current holdings or weights. Earnings-calendar averages are estimates, may be unavailable or change, and are not used to calculate or submit orders.
 
 ---
 
