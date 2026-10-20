@@ -20,6 +20,7 @@ from morning_routine import (
     _buy_only_plan,
     _calculate_unrealized_metrics,
     _closed_order_fill,
+    _legacy_backfill_start_date,
     _legacy_settled_order_ids,
     _resolve_average_price,
     _strategy_shares_after_record,
@@ -132,11 +133,52 @@ def test_legacy_settlement_matches_already_recorded_filled_order():
     assert _legacy_settled_order_ids([order], record) == {"filled-buy-1"}
 
 
+def test_legacy_settlement_matches_recorded_fill_after_unrelated_closed_order():
+    unrelated_order = {
+        "orderId": "unrelated-buy",
+        "side": "BUY",
+        "execution": {"filledQuantity": "1", "filledAmount": "50.00"},
+    }
+    recorded_order = {
+        "orderId": "recorded-buy",
+        "side": "BUY",
+        "execution": {"filledQuantity": "7", "filledAmount": "690.55"},
+    }
+    record = {"bought_shares": 7, "bought_amount": 690.55}
+
+    assert _legacy_settled_order_ids([unrelated_order, recorded_order], record) == {
+        "recorded-buy"
+    }
+
+
+def test_legacy_settlement_fails_when_multiple_order_subsets_match():
+    orders = [
+        {
+            "orderId": order_id,
+            "side": "BUY",
+            "execution": {"filledQuantity": "7", "filledAmount": "690.55"},
+        }
+        for order_id in ("buy-1", "buy-2")
+    ]
+    record = {"bought_shares": 7, "bought_amount": 690.55}
+
+    with pytest.raises(RuntimeError, match="Cannot uniquely match previously recorded fills"):
+        _legacy_settled_order_ids(orders, record)
+
+
 def test_legacy_settlement_fails_if_recorded_fills_cannot_be_matched():
     record = {"bought_shares": 7, "bought_amount": 690.55}
 
-    with pytest.raises(RuntimeError, match="Cannot match previously recorded fills"):
+    with pytest.raises(RuntimeError, match="Cannot uniquely match previously recorded fills"):
         _legacy_settled_order_ids([], record)
+
+
+def test_legacy_backfill_uses_previous_us_order_date():
+    assert _legacy_backfill_start_date("2026-10-20") == "2026-10-19"
+
+
+def test_legacy_backfill_skips_weekend_to_previous_weekday():
+    assert _legacy_backfill_start_date("2026-10-19") == "2026-10-16"
 
 
 def test_active_strategy_keeps_ledger_shares_when_broker_has_partial_transfer():

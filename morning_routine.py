@@ -14,7 +14,7 @@ import argparse
 import math
 import os
 import sys
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -162,31 +162,53 @@ def _legacy_settled_order_ids(closed_orders: list[dict], record: dict) -> set[st
                 "Legacy ledger has incomplete fill totals; inspect Toss order history before continuing."
             )
 
-        matched_shares = 0
-        matched_amount = 0.0
-        side_ids = []
+        target_cents = round(target_amount * 100)
+        candidates: list[tuple[str, int, int]] = []
         for order in closed_orders:
             fill = _closed_order_fill(order)
             if fill is None or fill[1] != side:
                 continue
             order_id, _, quantity, _, amount = fill
-            if matched_shares + quantity > target_shares:
-                break
-            matched_shares += quantity
-            matched_amount = round(matched_amount + amount, 2)
-            side_ids.append(order_id)
-            if matched_shares == target_shares and abs(matched_amount - target_amount) <= 0.02:
-                settled_ids.update(side_ids)
-                break
-        else:
-            matched_shares = -1
+            candidates.append((order_id, quantity, round(amount * 100)))
 
-        if matched_shares != target_shares or abs(matched_amount - target_amount) > 0.02:
+        # Legacy records stored aggregate fills, so match any exact order subset
+        # rather than assuming those fills were the first orders returned.
+        matches: set[tuple[str, ...]] = set()
+        reachable: dict[tuple[int, int], set[tuple[str, ...]]] = {(0, 0): {()}}
+        for order_id, quantity, amount_cents in candidates:
+            next_reachable = {state: set(ids) for state, ids in reachable.items()}
+            for (shares, cents), id_sets in reachable.items():
+                new_shares = shares + quantity
+                new_cents = cents + amount_cents
+                if new_shares > target_shares or new_cents > target_cents + 2:
+                    continue
+                key = (new_shares, new_cents)
+                known = next_reachable.setdefault(key, set())
+                for ids in id_sets:
+                    if len(known) < 2:
+                        known.add((*ids, order_id))
+            reachable = next_reachable
+
+        for (shares, cents), id_sets in reachable.items():
+            if shares == target_shares and abs(cents - target_cents) <= 2:
+                matches.update(id_sets)
+                if len(matches) > 1:
+                    break
+
+        if len(matches) != 1:
             raise RuntimeError(
-                "Cannot match previously recorded fills to Toss order IDs; "
+                "Cannot uniquely match previously recorded fills to Toss order IDs; "
                 "inspect the ledger and broker history before settling again."
             )
+        settled_ids.update(next(iter(matches)))
     return settled_ids
+
+
+def _legacy_backfill_start_date(record_date: str) -> str:
+    previous_day = date.fromisoformat(record_date) - timedelta(days=1)
+    while previous_day.weekday() >= 5:
+        previous_day -= timedelta(days=1)
+    return previous_day.isoformat()
 
 
 def _resolve_average_price(
@@ -315,11 +337,16 @@ def run_morning_routine(
         if history and (latest.get("date", today_str) < today_str or needs_legacy_backfill):
             cursor = None
             closed_orders = []
+            history_start_date = (
+                _legacy_backfill_start_date(latest["date"])
+                if needs_legacy_backfill
+                else latest["date"]
+            )
             while True:
                 page = client.get_order_history(
                     status="CLOSED",
                     symbol=settings.target_ticker,
-                    from_date=latest["date"],
+                    from_date=history_start_date,
                     to_date=today_str,
                     cursor=cursor,
                     limit=100,
