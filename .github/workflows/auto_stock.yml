@@ -1,11 +1,6 @@
 name: Auto Stock 24/7 Cloud Routine
 
 on:
-  schedule:
-    # 1) 평일 09:07 KST (00:07 UTC) -> 야간 체결 확인 & 모닝 리포트 발송
-    - cron: '7 0 * * 1-5'
-    # 2) 평일 20:07 KST (11:07 UTC) -> 오늘 밤 주문 접수 & 텔레그램 발송
-    - cron: '7 11 * * 1-5'
   workflow_dispatch:
     inputs:
       confirm_live_buy_only:
@@ -43,8 +38,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run Auto Stock Pipeline (Live, Evening Schedule Only)
-        if: ${{ (github.event_name == 'schedule' && github.event.schedule == '7 11 * * 1-5' && vars.ENABLE_LIVE_TRADING == 'true' && vars.LIVE_BUY_LIMIT_USD != '') || (github.event_name == 'workflow_dispatch' && inputs.confirm_live_buy_only == true && vars.ENABLE_LIVE_TRADING == 'true' && vars.LIVE_BUY_LIMIT_USD != '') }}
+      - name: Run Auto Stock Pipeline (Manual Live Buy-Only)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.confirm_live_buy_only == true && vars.ENABLE_LIVE_TRADING == 'true' && vars.LIVE_BUY_LIMIT_USD != '' }}
         env:
           TOSS_CLIENT_ID: ${{ secrets.TOSS_CLIENT_ID }}
           TOSS_CLIENT_SECRET: ${{ secrets.TOSS_CLIENT_SECRET }}
@@ -54,21 +49,16 @@ jobs:
           TOTAL_BUDGET_USD: ${{ vars.TOTAL_BUDGET_USD || '30000.0' }}
           AUTO_STOCK_STATE_DIR: /home/ubuntu/.local/state/auto-stock
           PYTHONIOENCODING: 'utf-8'
-          CONFIRM_LIVE_BUY_ONLY: ${{ inputs.confirm_live_buy_only }}
         run: |
           if [ "$(TZ=Asia/Seoul date +%H)" -ge 12 ]; then
             export AUTO_STOCK_ROUTINE=evening
           else
             export AUTO_STOCK_ROUTINE=morning
           fi
-          if [ "$CONFIRM_LIVE_BUY_ONLY" = "true" ] || [ "$(TZ=Asia/Seoul date +%F)" = "2026-10-19" ]; then
-            python morning_routine.py --live --buy-only --max-live-buy-notional-usd "${{ vars.LIVE_BUY_LIMIT_USD }}"
-          else
-            python morning_routine.py --live --max-live-buy-notional-usd "${{ vars.LIVE_BUY_LIMIT_USD }}"
-          fi
+          python morning_routine.py --live --buy-only --max-live-buy-notional-usd "${{ vars.LIVE_BUY_LIMIT_USD }}"
 
       - name: Run Auto Stock Pipeline (Dry-Run)
-        if: ${{ !((github.event_name == 'schedule' && github.event.schedule == '7 11 * * 1-5' && vars.ENABLE_LIVE_TRADING == 'true' && vars.LIVE_BUY_LIMIT_USD != '') || (github.event_name == 'workflow_dispatch' && inputs.confirm_live_buy_only == true && vars.ENABLE_LIVE_TRADING == 'true' && vars.LIVE_BUY_LIMIT_USD != '')) }}
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.confirm_live_buy_only == true && vars.ENABLE_LIVE_TRADING == 'true' && vars.LIVE_BUY_LIMIT_USD != '') }}
         env:
           TOSS_CLIENT_ID: ${{ secrets.TOSS_CLIENT_ID }}
           TOSS_CLIENT_SECRET: ${{ secrets.TOSS_CLIENT_SECRET }}

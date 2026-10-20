@@ -71,6 +71,34 @@ def _sync_strategy_cash(
     return None
 
 
+def _resolve_average_price(
+    broker_average_price: float,
+    ledger_average_price: float,
+) -> tuple[float, bool]:
+    if math.isfinite(broker_average_price) and broker_average_price > 0:
+        return broker_average_price, False
+    if math.isfinite(ledger_average_price) and ledger_average_price > 0:
+        return ledger_average_price, True
+    raise RuntimeError(
+        "Toss holdings contain shares but neither the broker nor local ledger "
+        "has a valid average price."
+    )
+
+
+def _calculate_unrealized_metrics(
+    current_price: float,
+    average_price: float,
+    total_shares: int,
+) -> tuple[float, float]:
+    if total_shares <= 0 or not math.isfinite(average_price) or average_price <= 0:
+        return 0.0, 0.0
+
+    unrealized_pnl = (current_price - average_price) * total_shares
+    cost_basis = average_price * total_shares
+    unrealized_pct = (unrealized_pnl / cost_basis) * 100.0
+    return unrealized_pnl, unrealized_pct
+
+
 def _buy_only_plan(order_plan: OrderPlan) -> OrderPlan:
     return order_plan.model_copy(
         update={
@@ -244,7 +272,15 @@ def run_morning_routine(
 
         if current_broker_shares > 0:
             state.total_shares = current_broker_shares
-            state.avg_price = current_broker_avg
+            state.avg_price, used_ledger_average = _resolve_average_price(
+                current_broker_avg,
+                state.avg_price,
+            )
+            if used_ledger_average:
+                console.print(
+                    "  [yellow]토스 보유내역의 평균 매수가가 유효하지 않아 "
+                    f"장부 평단 ${state.avg_price:.2f}을 유지합니다.[/yellow]"
+                )
         elif state.total_shares == 0:
             state.avg_price = 0.0
         cash_basis_cycle = _sync_strategy_cash(state, broker_cash_usd, cash_basis_cycle)
@@ -346,8 +382,11 @@ def run_morning_routine(
     total_equity = (broker_cash_usd if broker_cash_usd is not None else state.remaining_cash) + (
         state.total_shares * current_close
     )
-    unrealized_pnl = (current_close - state.avg_price) * state.total_shares if state.avg_price > 0 else 0.0
-    unrealized_pct = (unrealized_pnl / (state.avg_price * state.total_shares)) * 100.0 if state.total_shares > 0 else 0.0
+    unrealized_pnl, unrealized_pct = _calculate_unrealized_metrics(
+        current_close,
+        state.avg_price,
+        state.total_shares,
+    )
 
     record = DailyExecutionRecord(
         date=today_str,

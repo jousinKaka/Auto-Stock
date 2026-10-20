@@ -16,7 +16,13 @@ from agents.agent2_strategy import (
     StrategyState,
 )
 from agents.agent7_execution import TossExecutionAgent
-from morning_routine import _buy_only_plan, _sync_strategy_cash
+from morning_routine import (
+    _buy_only_plan,
+    _calculate_unrealized_metrics,
+    _resolve_average_price,
+    _sync_strategy_cash,
+)
+from scripts.run_routine import routine_arguments
 from services.market_data import extract_daily_closes
 from services.toss_client import TossSecuritiesClient, TossToken
 
@@ -42,6 +48,41 @@ def test_daily_close_extractor_ignores_current_new_york_date():
     )
 
     assert closes == [93.67]
+
+
+def test_unrealized_metrics_handle_zero_average_price_with_existing_shares():
+    assert _calculate_unrealized_metrics(100.0, 0.0, 7) == (0.0, 0.0)
+
+
+def test_invalid_broker_average_price_uses_valid_ledger_average():
+    assert _resolve_average_price(0.0, 120.0) == (120.0, True)
+
+
+def test_invalid_broker_and_ledger_average_prices_fail_explicitly():
+    with pytest.raises(RuntimeError, match="neither the broker nor local ledger"):
+        _resolve_average_price(0.0, 0.0)
+
+
+def test_scheduled_morning_routine_always_uses_dry_run():
+    assert routine_arguments("morning", "true", "1000") == []
+
+
+def test_scheduled_evening_routine_defaults_to_dry_run():
+    assert routine_arguments("evening", "false", "1000") == []
+    assert routine_arguments("evening", "true", "") == []
+
+
+def test_scheduled_evening_live_run_requires_explicit_enable_and_limit():
+    assert routine_arguments("evening", "true", "1000") == [
+        "--live",
+        "--max-live-buy-notional-usd",
+        "1000",
+    ]
+
+
+def test_scheduled_routine_rejects_unknown_slot():
+    with pytest.raises(ValueError, match="Routine must be"):
+        routine_arguments("noon", "false", "")
 
 
 def test_toss_client_serializes_loc_payload_to_official_schema():
