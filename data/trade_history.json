@@ -16,6 +16,8 @@
     "remaining_cash_after": 18165.73,
     "cash_basis_cycle": 1,
     "broker_cash_usd": 16457.28,
+    "broker_soxl_shares": 109,
+    "broker_soxl_avg_price": 121.034403,
     "bought_shares": 0,
     "bought_amount": 0.0,
     "sold_shares": 0,
@@ -27,6 +29,7 @@
     "investment_rationale": "20:07 KST 저녁 정기 루틴: 전일 체결 정산 후 T값 15.78 기준으로 오늘의 1회 매수금 $750.03 주문표 생성 및 모의 접수 (Dry-Run) 완료.",
     "notes": [
       "야간 체결: 매수 0주 / 매도 0주",
+      "2026-10-21 토스 계좌 조회: SOXL 109주, 실제 평단 $121.034403.",
       "매크로: RISK_ON (위험자산 선호 / 완만한 상승 우호 환경) | 반도체: DEEP_CORRECTION",
       "리스크 등급: GREEN",
       "회차 #1 전략 계산용 현금은 예산 $30000.00에서 SOXL 보유원가 $11834.27를 뺀 값이며, 토스 USD 매수 가능 금액은 $16457.28입니다."
