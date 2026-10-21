@@ -1,10 +1,8 @@
 # 🚀 Auto Stock: SOXL 무한매수법 V4.0 멀티 에이전트 시스템
 
-라오어의 **미국주식 무한매수법 V4.0** 알고리즘을 기반으로, **거시 매크로 분석 · 반도체 업황 사이클 · 종목 펀더멘털 · 리스크 워치독 · 토스증권 Open API 자동 체결 · 일일 투자 일지**가 결합된 7대 멀티 에이전트 자동화 시스템입니다.
+라오어의 **미국주식 무한매수법 V4.0** 알고리즘을 기반으로, **거시 매크로 분석 · 반도체 업황 사이클 · 종목 펀더멘털 · 리스크 워치독 · 토스증권 Open API 자동 체결 · 일일 투자 일지 · Google Sheets 계좌 현황 동기화**가 결합된 8대 멀티 에이전트 자동화 시스템입니다.
 
----
-
-## 🏗️ 7개 에이전트 시스템 구조
+## 🏗️ 8개 에이전트 시스템 구조
 
 ```
 c:\Auto Stock\
@@ -15,22 +13,24 @@ c:\Auto Stock\
 │   ├── agent4_macro.py         # [Agent 4] 10년물 국채금리, DXY, VIX, 시장 유동성 분석
 │   ├── agent5_industry.py      # [Agent 5] SOXX 완료 일봉 기술적 추세 분석 (주문 신호와 분리)
 │   ├── agent6_fundamental.py   # [Agent 6] 반도체 watchlist 실적 일정·EPS/매출 추정치·체크 지표
-│   └── agent7_execution.py     # [Agent 7] 토스증권 Open API 연동 및 모의/실거래 주문 집행
+│   ├── agent7_execution.py     # [Agent 7] 토스증권 Open API 연동 및 모의/실거래 주문 집행
+│   └── agent8_sheets_sync.py   # [Agent 8] 토스 계좌 현황을 Google Sheets에 동기화
 ├── services/
 │   └── toss_client.py          # 토스증권 공식 REST API & OAuth 2.0 클라이언트
 ├── config/
 │   ├── settings.py             # 전략 설정 (40분할, 목표수익률 20%, 예산 $10,000 등)
-│   └── toss_config.py          # 토스증권 API 엔드포인트 및 인증 설정
+│   ├── toss_config.py          # 토스증권 API 엔드포인트 및 인증 설정
+│   └── google_sheets_config.py # Google Sheets 계정 연동 설정
 ├── data/
 │   ├── trade_history.json      # 영구 저장되는 누적 체결 및 계좌 포트폴리오 원장
 │   └── reports/                # 매일 생성되는 일일 종합 투자 분석 보고서 (.md)
 ├── tests/                      # Pytest 기반 정밀 단위 테스트 슈트
-├── main.py                     # 7개 에이전트 통합 파이프라인 오케스트레이터
+├── main.py                     # 에이전트 통합 파이프라인 오케스트레이터
 ├── requirements.txt            # 의존성 패키지
 └── .env                        # 토스 API 키 및 보안 설정 (.gitignore 대상)
 ```
 
-에이전트별 역할과 변경 시 지켜야 할 사항은 코드 폴더와 분리된 [문서 폴더](./docs/agents/)에 정리되어 있습니다: [에이전트 1](./docs/agents/agent1.md), [에이전트 2](./docs/agents/agent2.md), [에이전트 3](./docs/agents/agent3.md), [에이전트 4](./docs/agents/agent4.md), [에이전트 5](./docs/agents/agent5.md), [에이전트 6](./docs/agents/agent6.md), [에이전트 7](./docs/agents/agent7.md).
+에이전트별 역할과 변경 시 지켜야 할 사항은 코드 폴더와 분리된 [문서 폴더](./docs/agents/)에 정리되어 있습니다: [에이전트 1](./docs/agents/agent1.md), [에이전트 2](./docs/agents/agent2.md), [에이전트 3](./docs/agents/agent3.md), [에이전트 4](./docs/agents/agent4.md), [에이전트 5](./docs/agents/agent5.md), [에이전트 6](./docs/agents/agent6.md), [에이전트 7](./docs/agents/agent7.md), [에이전트 8](./docs/agents/agent8.md).
 
 에이전트 4~6은 Yahoo Finance 데이터를 사용하며 조회 시각, 완료된 가격 기준일과 데이터 누락 정보를 보고합니다. 에이전트 4는 필수 지표가 없으면 예시값으로 대체하거나 거시 국면을 판단하지 않고 `DATA_UNAVAILABLE`을 표시합니다. 에이전트 5는 업종 지표를 주문 신호로 해석하지 않습니다. 에이전트 6은 반도체 관찰 목록을 다루며 SOXL의 현재 보유 종목이나 편입 비중을 뜻하지 않습니다. 실적 캘린더 평균값은 추정치로 변동되거나 제공되지 않을 수 있으며 주문 계산·제출에 사용되지 않습니다.
 
@@ -64,7 +64,7 @@ c:\Auto Stock\
 ```powershell
 .\.venv\Scripts\python.exe main.py --mode run
 ```
-- 7개 에이전트가 순차적으로 실행되어 최근 완료된 SOXL 일봉 종가와 계좌 상태를 기준으로 주문표를 산출하고, 리스크를 진단한 뒤 모의 주문을 접수합니다.
+- 에이전트가 실행되어 최근 완료된 SOXL 일봉 종가와 계좌 상태를 기준으로 주문표를 산출하고, 리스크를 진단한 뒤 모의 주문을 접수합니다.
 - `data/reports/YYYY-MM-DD_SOXL_report.md`에 당일 일지가 자동 생성됩니다.
 
 ### 2. Linux 서버에서 평일 오전 9시 / 저녁 8시 자동 실행
@@ -87,12 +87,22 @@ GitHub Actions 예약 대신 서버의 systemd 타이머를 사용합니다. Git
    sudo nano /etc/auto-stock/auto-stock.env
    ```
    예시 파일의 placeholder를 실제 값으로 바꾸세요. `TOSS_CLIENT_ID`, `TOSS_CLIENT_SECRET`, `TOSS_ACCOUNT_SEQ`, `TOTAL_BUDGET_USD`는 설정해야 합니다. 텔레그램 알림을 사용하면 `TELEGRAM_BOT_TOKEN`과 `TELEGRAM_CHAT_ID`도 설정합니다. 처음에는 `ENABLE_LIVE_TRADING=false`로 두세요.
-3. 저장소 루트에서 설치 스크립트를 실행합니다.
+3. Google Sheets 연동을 사용할 경우 Google Cloud 프로젝트에서 Google Sheets API를 활성화하고 서비스 계정 JSON 키를 발급합니다. JSON 안의 서비스 계정 이메일을 스프레드시트 편집자로 공유한 뒤, 키 파일은 저장소 밖에 두고 `ubuntu` 서비스 계정이 읽을 수 있도록 권한을 제한합니다. 예를 들어 `/home/ubuntu/.config/auto-stock/google-service-account.json`에 보관한 다음 서버 환경 파일에 아래 값을 추가합니다. 티커별 행 번호는 기존 표의 종목 행에 맞춰 설정합니다.
+   ```env
+   GOOGLE_SHEETS_ENABLED=true
+   GOOGLE_SHEETS_SPREADSHEET_ID=스프레드시트_ID
+   GOOGLE_SHEETS_WORKSHEET_GID=22630165
+   GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE=/home/ubuntu/.config/auto-stock/google-service-account.json
+   GOOGLE_SHEETS_TICKER_ROWS=NVDU:5,SOXL:6,TQQQ:7
+   GOOGLE_SHEETS_CASH_ROW=10
+   ```
+   위 티커와 행은 입력 형식 예시입니다. 실제 계좌 보유 티커와 시트의 각 종목 행으로 바꾸세요. Agent 8은 기존 평일 09:00 KST 아침 루틴에서만 실행됩니다. A열에는 티커를 기록하고 A~F와 J만 갱신하며, 목표 비중 등의 G~I와 다른 열은 쓰지 않습니다. 설정된 티커가 계좌에 없으면 해당 티커 행의 A~F/J를 비우고, 설정하지 않은 새 티커가 발견되면 잘못된 행에 기록하지 않고 동기화를 실패 처리합니다.
+4. 저장소 루트에서 설치 스크립트를 실행합니다.
    ```bash
    bash deploy/install_systemd_timers.sh
    ```
    스크립트가 Python 가상환경과 의존성을 준비하고, systemd 타이머를 설치 및 활성화합니다.
-4. 타이머 시간과 실행 로그를 확인합니다.
+5. 타이머 시간과 실행 로그를 확인합니다.
    ```bash
    systemctl list-timers auto-stock-morning.timer auto-stock-evening.timer
    journalctl -u auto-stock@morning.service -n 100 --no-pager

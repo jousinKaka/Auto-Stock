@@ -16,6 +16,7 @@ from agents.agent4_macro import MacroIntelligenceAgent, MacroAnalysisResult
 from agents.agent5_industry import SemiIndustryAgent, SemiCycleSnapshot
 from agents.agent6_fundamental import ConstituentsFundamentalAgent, SOXLConstituentsAnalysis
 from agents.agent7_execution import TossExecutionAgent, ExecutionResult
+from agents.agent8_sheets_sync import GoogleSheetsAccountSyncAgent, GoogleSheetsSyncError
 
 __all__ = [
     # Agent 1
@@ -46,5 +47,7 @@ __all__ = [
     # Agent 7
     "TossExecutionAgent",
     "ExecutionResult",
+    # Agent 8
+    "GoogleSheetsAccountSyncAgent",
+    "GoogleSheetsSyncError",
 ]
-

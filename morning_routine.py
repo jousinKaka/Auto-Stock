@@ -27,6 +27,8 @@ from agents import (
     DailyExecutionRecord,
     ExecutionJournalAgent,
     InfiniteStrategyAgent,
+    GoogleSheetsAccountSyncAgent,
+    GoogleSheetsSyncError,
     MacroIntelligenceAgent,
     OrderPlan,
     OrderSide,
@@ -37,6 +39,7 @@ from agents import (
     TossExecutionAgent,
 )
 from config.settings import settings
+from config.google_sheets_config import google_sheets_config
 from services.market_data import extract_daily_closes
 from services.toss_client import TossSecuritiesClient
 
@@ -623,6 +626,18 @@ def run_morning_routine(
     report_path = journal_agent.reports_dir / f"{today_str}_{settings.target_ticker}_report.md"
     console.print(f"\n✔ [green]일일 투자 보고서 저장 완료:[/green] [link=file:///{report_path}]{report_path}[/link]")
 
+    sheets_sync_error: Optional[GoogleSheetsSyncError] = None
+    if routine_slot == "morning" and google_sheets_config.enabled:
+        try:
+            sync_summary = GoogleSheetsAccountSyncAgent(
+                client=client,
+                config=google_sheets_config,
+            ).sync()
+            console.print(f"  ✔ [green]Agent 8:[/green] {sync_summary}")
+        except GoogleSheetsSyncError as exc:
+            sheets_sync_error = exc
+            console.print(f"  ✖ [bold red]Agent 8 Google Sheets 동기화 실패:[/bold red] {exc}")
+
     # 8. Send Telegram Briefing
     from services.telegram_notifier import TelegramNotifier
     tg = TelegramNotifier()
@@ -644,6 +659,14 @@ def run_morning_routine(
             console.print("  ⚠️ [yellow]텔레그램 발송 실패 (토큰 및 Chat ID 확인 필요)[/yellow]")
     else:
         console.print("  [dim]💡 텔레그램 알림 미설정 (.env에 토큰과 Chat ID 설정 시 매일 아침 자동 전송)[/dim]")
+
+    if sheets_sync_error is not None:
+        if tg.is_configured:
+            tg.send_message(
+                f"⚠️ Agent 8 Google Sheets 계좌 현황 동기화에 실패했습니다.\n"
+                f"서버 로그를 확인해 주세요: {sheets_sync_error}"
+            )
+        raise sheets_sync_error
 
     console.print(f"[bold green]🎉 {routine_time_label} 루틴이 완료되었습니다![/bold green]\n")
 
