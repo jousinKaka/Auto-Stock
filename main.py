@@ -197,6 +197,12 @@ def run_pipeline(dry_run: bool = True) -> None:
         avg_price_after=state.avg_price,
         remaining_cash_before=state.remaining_cash,
         remaining_cash_after=state.remaining_cash,
+        broker_soxl_shares=(
+            int(sync_info["broker_soxl_shares"]) if sync_info["is_live_synced"] else None
+        ),
+        broker_soxl_avg_price=(
+            float(sync_info["broker_soxl_avg_price"]) if sync_info["is_live_synced"] else None
+        ),
         unrealized_pnl=round(unrealized_pnl, 2),
         unrealized_return_pct=round(unrealized_pct, 2),
         total_equity=round(total_equity, 2),

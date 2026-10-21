@@ -95,6 +95,38 @@ def test_invalid_broker_and_ledger_average_prices_fail_explicitly():
         _resolve_average_price(0.0, 0.0)
 
 
+def test_live_account_sync_uses_toss_average_purchase_price():
+    class AccountSyncClient(FakeExecutionClient):
+        def get_exchange_rate(self):
+            return 1400.0
+
+        def get_buying_power(self, currency="USD"):
+            return {"cashBuyingPower": "1000.00"}
+
+        def get_holdings(self):
+            return {
+                "items": [
+                    {
+                        "symbol": "SOXL",
+                        "quantity": 109,
+                        "averagePurchasePrice": "121.034403",
+                    }
+                ]
+            }
+
+    client = AccountSyncClient()
+    agent = TossExecutionAgent(client=client, dry_run=False)
+    state = StrategyState(total_shares=95, avg_price=124.5713, remaining_cash=500.0)
+
+    synced_state, sync_info = agent.sync_account_state(state)
+
+    assert sync_info["is_live_synced"] is True
+    assert sync_info["broker_soxl_shares"] == 109
+    assert sync_info["broker_soxl_avg_price"] == pytest.approx(121.034403)
+    assert synced_state.total_shares == 109
+    assert synced_state.avg_price == pytest.approx(121.034403)
+
+
 def test_active_cycle_recovers_shares_from_starting_position_and_settled_fills():
     record = {
         "cycle": 1,

@@ -421,7 +421,11 @@ def run_morning_routine(
         soxl_item = next((it for it in items if it.get("symbol") == settings.target_ticker), None)
         current_broker_shares = int(soxl_item.get("quantity", 0)) if soxl_item else 0
         broker_soxl_shares = current_broker_shares
-        current_broker_avg = float(soxl_item.get("averagePrice", 0.0)) if soxl_item else 0.0
+        current_broker_avg = (
+            float(soxl_item.get("averagePurchasePrice", soxl_item.get("averagePrice", 0.0)))
+            if soxl_item
+            else 0.0
+        )
 
         bp_resp = client.get_buying_power(currency="USD")
         raw_cash = bp_resp.get("cashBuyingPower", bp_resp.get("usdCash"))
@@ -587,6 +591,7 @@ def run_morning_routine(
         strategy_shares_cycle=strategy_shares_cycle,
         broker_cash_usd=broker_cash_usd,
         broker_soxl_shares=broker_soxl_shares,
+        broker_soxl_avg_price=current_broker_avg if broker_soxl_shares is not None else None,
         settled_order_ids=sorted(set(settled_order_ids)),
     )
     if (

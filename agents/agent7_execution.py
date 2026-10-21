@@ -215,7 +215,9 @@ class TossExecutionAgent:
 
             if soxl_item:
                 soxl_qty = int(soxl_item.get("quantity", 0))
-                soxl_avg = float(soxl_item.get("averagePrice", 0.0))
+                soxl_avg = float(
+                    soxl_item.get("averagePurchasePrice", soxl_item.get("averagePrice", 0.0))
+                )
                 sync_info["broker_soxl_shares"] = soxl_qty
                 sync_info["broker_soxl_avg_price"] = soxl_avg
 

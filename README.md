@@ -30,7 +30,9 @@ c:\Auto Stock\
 └── .env                        # 토스 API 키 및 보안 설정 (.gitignore 대상)
 ```
 
-Agents 4 through 6 use Yahoo Finance data and report the retrieval time, completed-price date, and missing-data notes. Agent 4 reports `DATA_UNAVAILABLE` instead of substituting sample values or judging the macro regime when a required indicator is missing; its market observations are not trade recommendations. Agent 5 does not substitute sample values or infer order signals from sector indicators. Agent 6 covers a curated semiconductor watchlist; it does not claim to represent SOXL's current holdings or weights. Earnings-calendar averages are estimates, may be unavailable or change, and are not used to calculate or submit orders.
+에이전트별 역할과 변경 시 지켜야 할 사항은 코드 폴더와 분리된 [문서 폴더](./docs/agents/)에 정리되어 있습니다: [에이전트 1](./docs/agents/agent1.md), [에이전트 2](./docs/agents/agent2.md), [에이전트 3](./docs/agents/agent3.md), [에이전트 4](./docs/agents/agent4.md), [에이전트 5](./docs/agents/agent5.md), [에이전트 6](./docs/agents/agent6.md), [에이전트 7](./docs/agents/agent7.md).
+
+에이전트 4~6은 Yahoo Finance 데이터를 사용하며 조회 시각, 완료된 가격 기준일과 데이터 누락 정보를 보고합니다. 에이전트 4는 필수 지표가 없으면 예시값으로 대체하거나 거시 국면을 판단하지 않고 `DATA_UNAVAILABLE`을 표시합니다. 에이전트 5는 업종 지표를 주문 신호로 해석하지 않습니다. 에이전트 6은 반도체 관찰 목록을 다루며 SOXL의 현재 보유 종목이나 편입 비중을 뜻하지 않습니다. 실적 캘린더 평균값은 추정치로 변동되거나 제공되지 않을 수 있으며 주문 계산·제출에 사용되지 않습니다.
 
 ---
 
@@ -96,7 +98,6 @@ GitHub Actions 예약 대신 서버의 systemd 타이머를 사용합니다. Git
    journalctl -u auto-stock@morning.service -n 100 --no-pager
    journalctl -u auto-stock@evening.service -n 100 --no-pager
    ```
-
    구버전 원장에 주문 ID 없이 체결 합계만 기록되어 있으면, 루틴은 한국 원장 날짜보다 앞선 미국 주문 날짜까지 조회해 해당 체결 주문을 유일하게 확인한 뒤에만 정산을 계속합니다. 일치하는 주문이 없거나 여러 조합이 가능하면 중복 정산을 막기 위해 중단하므로, 원장이나 주문 내역을 임의로 수정하지 말고 두 내역을 먼저 대조하세요.
 
 아침 루틴은 항상 주문을 제출하지 않고, 전날 미국장 체결·계좌를 정산해 에이전트 4~6 분석과 함께 텔레그램으로 보냅니다. 내부적으로는 주문표를 산출해 일일 리포트에 기록하지만, 아침 알림에는 주문표를 포함하지 않습니다. 선택된 전략 회차에서는 장부 보유량/평단과 토스 실제 보유량을 따로 표시하며, 주문 전 매도 수량이 토스 실계좌 보유 수량 이내인지 검사합니다. 저녁 루틴은 주문 계획과 주문 접수 결과를 텔레그램으로 보냅니다. 저녁도 기본은 Dry-Run입니다. 저녁 실거래를 허용하려면 서버 환경 파일에서 `ENABLE_LIVE_TRADING=true`와 양수 `LIVE_BUY_LIMIT_USD`를 설정해야 합니다. 이 경우 기존 실거래 흐름대로 매수·매도 계획을 제출할 수 있으므로, 계좌와 주문표 및 한도를 먼저 검토하세요. 주문 접수는 체결 확정이 아니며, 체결은 다음 아침 루틴에서 정산합니다. 두 루틴은 서버 현지 시간 기준 평일 09:00 및 20:00에 실행됩니다.

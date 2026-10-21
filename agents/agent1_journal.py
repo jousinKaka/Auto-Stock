@@ -37,6 +37,7 @@ class DailyExecutionRecord(BaseModel):
     strategy_shares_cycle: Optional[int] = None
     broker_cash_usd: Optional[float] = None
     broker_soxl_shares: Optional[int] = None
+    broker_soxl_avg_price: Optional[float] = None
     settled_order_ids: List[str] = Field(default_factory=list)
     
     bought_shares: int = 0
@@ -125,9 +126,14 @@ class ExecutionJournalAgent:
                 8,
                 f"| **토스 실제 SOXL 보유량** | - | **{record.broker_soxl_shares}주** | - |",
             )
+        if record.broker_soxl_avg_price is not None:
+            report_lines.insert(
+                9,
+                f"| **토스 실제 SOXL 평단** | - | **${record.broker_soxl_avg_price:.4f}** | - |",
+            )
         if record.broker_cash_usd is not None:
             report_lines.insert(
-                12,
+                13,
                 f"| **토스 USD 매수 가능 금액** | - | **${record.broker_cash_usd:.2f}** | - |",
             )
 
