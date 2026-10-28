@@ -29,6 +29,7 @@ class StrategySettings(BaseSettings):
     # Telegram Notifications
     telegram_bot_token: str = Field(default="", description="Telegram Bot API Token")
     telegram_chat_id: str = Field(default="", description="Telegram Chat ID")
+    cycle_capital_wait_seconds: int = Field(default=300, ge=0, le=3600, description="새 회차 시작자산 답변 대기 시간(초)")
     
     model_config = SettingsConfigDict(
         env_file=str(BASE_DIR / ".env"),

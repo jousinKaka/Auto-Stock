@@ -61,7 +61,7 @@ def _sync_strategy_cash(
 ) -> None:
     if not math.isfinite(broker_cash) or broker_cash < 0:
         raise RuntimeError(f"Toss USD buying power is invalid: {broker_cash!r}.")
-    state.remaining_cash = round(broker_cash, 2)
+    state.remaining_cash = max(0.0, round(broker_cash - state.excluded_cash, 2))
 
 
 def _strategy_shares_after_record(record: dict) -> int:
@@ -295,7 +295,8 @@ def run_morning_routine(
             avg_price=latest.get("avg_price_after", 0.0),
             total_shares=_strategy_shares_after_record(latest),
             remaining_cash=latest.get("remaining_cash_after", settings.total_budget_usd),
-            initial_budget=settings.total_budget_usd,
+            initial_budget=latest.get("initial_budget") or settings.total_budget_usd,
+            excluded_cash=latest.get("excluded_cash", 0.0),
             mode=StrategyMode(latest.get("mode", StrategyMode.NORMAL.value)),
         )
     else:
@@ -461,6 +462,12 @@ def run_morning_routine(
     else:
         console.print("  [dim]API 미설정으로 로컬 장부 상태를 기준으로 진행합니다.[/dim]")
 
+    from services.cycle_capital import confirm_cycle_capital
+    confirm_cycle_capital(
+        state, settings.data_dir / "cycle_capital_requests.json",
+        wait_seconds=settings.cycle_capital_wait_seconds,
+    )
+
     # 3. Live Price & Market Intelligence
     console.print("\n[bold yellow]▶ [2/4] 마감 종가 및 시장 인텔리전스 수집...[/bold yellow]")
     current_close = 0.0
@@ -573,6 +580,8 @@ def run_morning_routine(
         avg_price_after=state.avg_price,
         remaining_cash_before=prev_cash,
         remaining_cash_after=state.remaining_cash,
+        initial_budget=state.initial_budget,
+        excluded_cash=state.excluded_cash,
         bought_shares=overnight_bought_shares,
         bought_amount=overnight_bought_cost,
         sold_shares=overnight_sold_shares,
@@ -639,7 +648,7 @@ def run_morning_routine(
             console.print(f"  ✖ [bold red]Agent 8 Google Sheets 동기화 실패:[/bold red] {exc}")
 
     # 8. Send Telegram Briefing
-    from services.telegram_notifier import TelegramNotifier
+    from services.telegram_notifier import TelegramNotifier, previous_account_record
     tg = TelegramNotifier()
     if tg.is_configured:
         tg_ok = tg.send_morning_briefing(
@@ -652,6 +661,7 @@ def run_morning_routine(
             macro_summary=macro_res.to_markdown(),
             semi_summary=semi_res.to_markdown(),
             fundamental_summary=fund_res.to_markdown(),
+            previous_record=previous_account_record(history, today_str, state.ticker),
         )
         if tg_ok:
             console.print("  ✔ [green]텔레그램 일일 리포트 발송 완료![/green]")

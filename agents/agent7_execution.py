@@ -206,7 +206,7 @@ class TossExecutionAgent:
             raw_cash = bp.get("cashBuyingPower", bp.get("usdCash", current_state.remaining_cash))
             usd_cash = float(raw_cash) if raw_cash is not None else float(current_state.remaining_cash)
             sync_info["broker_usd_cash"] = usd_cash
-            current_state.remaining_cash = usd_cash
+            current_state.remaining_cash = max(0.0, round(usd_cash - current_state.excluded_cash, 2))
 
             # 3. Stock Holdings
             holdings_resp = self.client.get_holdings()

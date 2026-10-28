@@ -7,6 +7,8 @@ directly to the user's Telegram chat.
 from __future__ import annotations
 
 import logging
+import math
+import re
 from html import escape
 from typing import Optional
 import httpx
@@ -14,6 +16,141 @@ import httpx
 from agents.agent1_journal import DailyExecutionRecord
 from agents.agent2_strategy import OrderPlan, OrderSide
 from config.settings import settings
+
+
+def previous_account_record(history: list[dict], date: str, ticker: str) -> Optional[dict]:
+    """같은 날 기록을 제외하고 같은 종목의 직전 저장 날짜를 선택합니다."""
+    candidates = [row for row in history if row.get("ticker") == ticker and row.get("date", "") < date]
+    return max(candidates, key=lambda row: row["date"], default=None)
+
+
+def _money(value: float, signed: bool = False) -> str:
+    prefix = "−" if value < 0 else "+" if signed else ""
+    return f"{prefix}${abs(value):,.2f}"
+
+
+def _account_change(previous: Optional[dict], key: str, value: float, kind="money", percent=False) -> str:
+    before = previous.get(key) if previous else None
+    if before is None or not math.isfinite(float(before)) or not math.isfinite(value):
+        return ""
+    change = value - float(before)
+    label = f"{change:+.0f}주" if kind == "shares" else f"{change:+.2f}" if kind == "number" else _money(change, signed=True)
+    if percent and float(before) > 0:
+        label += f" · {change / float(before) * 100:+.2f}%"
+    return f" ({label})"
+
+
+def _telegram_inline(text: str) -> str:
+    """분석 Markdown의 인라인 표현을 안전한 Telegram HTML로 바꿉니다."""
+    pattern = r"\[([^\]]+)\]\((https?://[^\s)]+)\)|\*\*(.+?)\*\*|`([^`]+)`"
+    parts = []
+    cursor = 0
+    for match in re.finditer(pattern, text):
+        parts.append(escape(text[cursor:match.start()]))
+        label, url, bold, code = match.groups()
+        if url:
+            parts.append(f'<a href="{escape(url, quote=True)}">{escape(label)}</a>')
+        elif bold is not None:
+            parts.append(f"<b>{escape(bold)}</b>")
+        else:
+            parts.append(escape(code))
+        cursor = match.end()
+    parts.append(escape(text[cursor:]))
+    return "".join(parts)
+
+
+def _analysis_blocks(summary: str) -> list[str]:
+    """표를 항목별 카드로 펼쳐 모바일에서 읽을 수 있게 만듭니다."""
+    blocks = []
+    headers = []
+    summary_lines = []
+
+    def flush_summary() -> None:
+        if summary_lines:
+            blocks.append("\n".join(summary_lines))
+            summary_lines.clear()
+
+    for line in (summary or "분석 요약 없음").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("|") and line.endswith("|"):
+            flush_summary()
+            cells = [cell.strip() for cell in line.strip("|").split("|")]
+            if all(re.fullmatch(r":?-+:?", cell) for cell in cells):
+                continue
+            if not headers:
+                headers = cells
+                continue
+            if len(cells) == len(headers):
+                title = cells[0].replace("`", "")
+                first_value = 1
+                if headers[:2] == ["종목", "기업"]:
+                    title += f" · {cells[1]}"
+                    first_value = 2
+                if headers[:2] == ["종목", "기업"] and "다음 실적일" in headers:
+                    values = dict(zip(headers, cells))
+                    rows = [f"<b>{escape(title)}</b>"]
+                    rows.append(
+                        f"💵 {_telegram_inline(values.get('주가($)', 'N/A'))}  "
+                        f"({_telegram_inline(values.get('1일 등락', 'N/A'))})"
+                    )
+                    rows.append(f"📅 실적 발표: {_telegram_inline(values['다음 실적일'])}")
+                    rows.append(
+                        f"예상 EPS {_telegram_inline(values.get('EPS 컨센서스', 'N/A'))} · "
+                        f"예상 매출 {_telegram_inline(values.get('매출 컨센서스', 'N/A'))}"
+                    )
+                    for label, prefix in [("실적 체크 지표", "체크"), ("데이터 참고", "참고")]:
+                        if values.get(label) not in (None, "", "-"):
+                            rows.append(f"{prefix}: {_telegram_inline(values[label])}")
+                    if values.get("출처"):
+                        rows.append(_telegram_inline(values["출처"]))
+                    blocks.append("\n".join(rows))
+                    continue
+                rows = [f"<b>{escape(title)}</b>"]
+                rows.extend(
+                    f"• <b>{escape(label)}</b>: {_telegram_inline(value)}"
+                    for label, value in zip(headers[first_value:], cells[first_value:])
+                    if value and value != "-"
+                )
+                blocks.append("\n".join(rows))
+                continue
+        else:
+            headers = []
+        if line.startswith("- "):
+            line = "• " + line[2:]
+        else:
+            flush_summary()
+        # 긴 원문도 HTML 태그나 엔티티 중간에서 자르지 않습니다.
+        for i in range(0, len(line), 900):
+            rendered = _telegram_inline(line[i:i + 900])
+            if line.startswith("• "):
+                if sum(len(item) + 1 for item in summary_lines) + len(rendered) > 2400:
+                    flush_summary()
+                summary_lines.append(rendered)
+            else:
+                blocks.append(rendered)
+    flush_summary()
+    return blocks
+
+
+def _analysis_messages(date: str, summaries: list[tuple[str, str]]) -> list[str]:
+    title = f"📊 <b>[SOXL 에이전트 분석] {escape(date)}</b>"
+    messages = []
+    current = title
+    for heading, summary in summaries:
+        section = f"<b>{heading}</b>"
+        for index, block in enumerate(_analysis_blocks(summary)):
+            addition = f"{section}\n\n{block}" if index == 0 else block
+            # 글자 수와 별도로 서식 개수에도 여유를 두어 후반부 강조 누락을 막습니다.
+            entity_count = len(re.findall(r"<(?:b|a)\b", current + addition))
+            if len(current) + len(addition) + 2 > 3800 or entity_count > 80:
+                messages.append(current)
+                current = f"{title}\n\n{section} (계속)\n\n{block}"
+            else:
+                current += "\n\n" + addition
+    messages.append(current)
+    return messages
 
 
 class TelegramNotifier:
@@ -72,6 +209,7 @@ class TelegramNotifier:
         macro_summary: str = "",
         semi_summary: str = "",
         fundamental_summary: str = "",
+        previous_record: Optional[dict] = None,
     ) -> bool:
         """Send an evening order update or a morning settlement and analysis."""
         if not self.is_configured:
@@ -89,27 +227,40 @@ class TelegramNotifier:
             else "체결 정산·분석 (주문 없음)"
         )
         account_section = "현재 계좌 현황" if is_evening else "밤사이 체결 정산 및 계좌 현황"
+        def change(key, value, kind="money", percent=False):
+            return _account_change(previous_record, key, value, kind, percent)
+
+        pnl_change = change("unrealized_pnl", record.unrealized_pnl)
+        if pnl_change and previous_record.get("unrealized_return_pct") is not None:
+            points = record.unrealized_return_pct - previous_record["unrealized_return_pct"]
+            pnl_change = pnl_change[:-1] + f" · 수익률 {points:+.2f}%p)"
+        price_change = ""
+        if record.prev_close > 0:
+            difference = record.current_close - record.prev_close
+            price_change = f" ({_money(difference, signed=True)} · {difference / record.prev_close * 100:+.2f}%)"
+        divisions = order_plan.state_snapshot.divisions
         account_lines = [
             f"🚀 <b>[SOXL 무한매수 V4.0] {time_label} 루틴 ({run_mode})</b>",
             f"📅 <b>기준일자</b>: {record.date} | <b>회차</b>: #{record.cycle} | <b>모드</b>: {record.mode}",
             "",
             f"<b>💼 {account_section}</b>",
-            f"• <b>진행도 (T값)</b>: <code>{record.T_after:.2f} / 40</code> ({'전반전' if record.T_after < 20 else '후반전'})",
-            f"• <b>보유 주식</b>: <b>{record.total_shares_after}주</b> (평단가: <b>${record.avg_price_after:.2f}</b>)",
-            f"• <b>현재가</b>: <b>${record.current_close:.2f}</b> ({((record.current_close - record.prev_close)/record.prev_close)*100:+.2f}%)",
-            f"• <b>평가 손익</b>: <b>${record.unrealized_pnl:+.2f} ({record.unrealized_return_pct:+.2f}%)</b>",
-            f"• <b>전략 계산용 현금</b>: <b>${record.remaining_cash_after:,.2f}</b>",
-            f"• <b>총 자산 가치</b>: <b>${record.total_equity:,.2f}</b>",
+            f"• <b>진행도 (T값)</b>: <code>{record.T_after:.2f} / {divisions}</code> · {'전반전' if record.T_after < divisions / 2 else '후반전'}<b>{change('T_after', record.T_after, 'number')}</b>",
+            f"• <b>보유 주식</b>: <b>{record.total_shares_after}주{change('total_shares_after', record.total_shares_after, 'shares')}</b>",
+            f"• <b>평단가</b>: <b>{_money(record.avg_price_after)}{change('avg_price_after', record.avg_price_after)}</b>",
+            f"• <b>현재가</b>: <b>{_money(record.current_close)}{price_change}</b>",
+            f"• <b>평가 손익</b>: <b>{_money(record.unrealized_pnl)} · {record.unrealized_return_pct:+.2f}%{pnl_change}</b>",
+            f"• <b>전략 계산용 현금</b>: <b>{_money(record.remaining_cash_after)}{change('remaining_cash_after', record.remaining_cash_after)}</b>",
+            f"• <b>총 자산 가치</b>: <b>{_money(record.total_equity)}{change('total_equity', record.total_equity, percent=True)}</b>",
         ]
         if record.broker_soxl_shares is not None:
             account_lines.insert(
                 -1,
-                f"• <b>토스 실제 SOXL 보유량</b>: <b>{record.broker_soxl_shares}주</b>",
+                f"• <b>토스 실제 SOXL 보유량</b>: <b>{record.broker_soxl_shares}주{change('broker_soxl_shares', record.broker_soxl_shares, 'shares')}</b>",
             )
         if record.broker_cash_usd is not None:
             account_lines.insert(
                 -1,
-                f"• <b>토스 USD 매수 가능 금액</b>: <b>${record.broker_cash_usd:,.2f}</b>",
+                f"• <b>토스 USD 매수 가능 금액</b>: <b>{_money(record.broker_cash_usd)}{change('broker_cash_usd', record.broker_cash_usd)}</b>",
             )
 
         if not is_evening:
@@ -120,30 +271,21 @@ class TelegramNotifier:
             if record.bought_shares or record.sold_shares:
                 if record.bought_shares:
                     account_lines.append(
-                        f"• 매수 체결: +{record.bought_shares}주 (${record.bought_amount:.2f})"
+                        f"• 매수 체결: <b>{record.bought_shares}주 · {_money(record.bought_amount)}</b>"
                     )
                 if record.sold_shares:
                     account_lines.append(
-                        f"• 매도 체결: -{record.sold_shares}주 (${record.sold_amount:.2f})"
+                        f"• 매도 체결: <b>{record.sold_shares}주 · {_money(record.sold_amount)}</b>"
                     )
-                account_lines.append(f"• 실현 손익: ${record.realized_pnl:+.2f}")
+                account_lines.append(f"• 실현 손익: <b>{_money(record.realized_pnl)}</b>")
             else:
                 account_lines.append("• 체결된 SOXL 주문이 없습니다.")
-            account_lines.extend([
-                "",
-                "<i>*아침 정산·분석 메시지이며, 주문은 제출하지 않았습니다.*</i>",
-            ])
             messages = [
                 "\n".join(account_lines),
-                "\n".join([
-                    f"📊 <b>[SOXL 에이전트 분석] {record.date}</b>",
-                    "",
-                    f"<b>Agent 4 · 거시 매크로</b>\n{escape(macro_summary or '분석 요약 없음')}",
-                    "",
-                    f"<b>Agent 5 · 반도체 업황</b>\n{escape(semi_summary or '분석 요약 없음')}",
-                    "",
-                    f"<b>Agent 6 · 주요 기업·실적 일정</b>\n"
-                    f"{escape(fundamental_summary or '분석 요약 없음')}",
+                *_analysis_messages(record.date, [
+                    ("🌐 거시 매크로 · Agent 4", macro_summary),
+                    ("💾 반도체 업황 · Agent 5", semi_summary),
+                    ("🏢 주요 기업·실적 일정 · Agent 6", fundamental_summary),
                 ]),
             ]
         else:

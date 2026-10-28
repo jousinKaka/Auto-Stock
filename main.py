@@ -108,7 +108,8 @@ def run_pipeline(dry_run: bool = True) -> None:
             avg_price=latest.get("avg_price_after", 0.0),
             total_shares=latest.get("total_shares_after", 0),
             remaining_cash=latest.get("remaining_cash_after", settings.total_budget_usd),
-            initial_budget=settings.total_budget_usd,
+            initial_budget=latest.get("initial_budget") or settings.total_budget_usd,
+            excluded_cash=latest.get("excluded_cash", 0.0),
             mode=latest.get("mode", "NORMAL"),
         )
     else:
@@ -123,6 +124,11 @@ def run_pipeline(dry_run: bool = True) -> None:
 
     exec_agent = TossExecutionAgent(dry_run=dry_run)
     state, sync_info = exec_agent.sync_account_state(state)
+    from services.cycle_capital import confirm_cycle_capital
+    confirm_cycle_capital(
+        state, settings.data_dir / "cycle_capital_requests.json",
+        wait_seconds=settings.cycle_capital_wait_seconds,
+    )
     console.print(f"  ✔ [green]계좌 상태[/green]: {sync_info.get('note', '')}")
     console.print(f"    - 보유수량: {state.total_shares}주 | 평단: ${state.avg_price:.2f} | 잔여예수금: ${state.remaining_cash:.2f}")
 
@@ -197,6 +203,8 @@ def run_pipeline(dry_run: bool = True) -> None:
         avg_price_after=state.avg_price,
         remaining_cash_before=state.remaining_cash,
         remaining_cash_after=state.remaining_cash,
+        initial_budget=state.initial_budget,
+        excluded_cash=state.excluded_cash,
         broker_soxl_shares=(
             int(sync_info["broker_soxl_shares"]) if sync_info["is_live_synced"] else None
         ),

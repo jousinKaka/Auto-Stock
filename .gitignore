@@ -8,3 +8,5 @@ __pycache__/
 .pytest_cache/
 data/cache/
 *.log
+data/cycle_capital_requests.json
+data/cycle_capital_requests.tmp

@@ -62,6 +62,7 @@ class StrategyState(BaseModel):
     total_shares: int = 0
     remaining_cash: float = 10000.0
     initial_budget: float = 10000.0
+    excluded_cash: float = 0.0
     
     mode: StrategyMode = StrategyMode.NORMAL
     reverse_day: int = 0
@@ -98,7 +99,7 @@ class OrderPlan(BaseModel):
             f"### [오늘의 무한매수 주문표] {self.ticker} ({self.date})",
             f"- **진행 상태**: 회차 #{self.state_snapshot.cycle} | **T값**: {self.state_snapshot.T:.2f} / {self.state_snapshot.divisions} ({'전반전' if self.state_snapshot.is_first_half else '후반전'}) | **모드**: {self.state_snapshot.mode.value}",
             f"- **보유 현황**: {self.state_snapshot.total_shares}주 @ ${self.state_snapshot.avg_price:.2f} (평가액: ${self.state_snapshot.total_invested:.2f})",
-            f"- **남은 현금**: ${self.state_snapshot.remaining_cash:.2f} | **1회 매수금**: ${self.one_unit_cash:.2f}",
+            f"- **회차 시작 원금**: ${self.state_snapshot.initial_budget:.2f} | **남은 현금**: ${self.state_snapshot.remaining_cash:.2f} | **1회 매수금**: ${self.one_unit_cash:.2f}",
             f"- **기준 가격**: 전일종가 ${self.prev_close:.2f} | 별% {self.star_pct*100:+.2f}% | **별지점** ${self.star_price:.2f} | **익절목표** ${self.target_sell_price:.2f}",
             "",
             "| 구분 | 주문유형 | 가격($) | 수량 | 예상금액($) | 설명/목적 |",
@@ -462,6 +463,9 @@ class InfiniteStrategyAgent:
             self.state.total_shares = 0
             self.state.mode = StrategyMode.NORMAL
             self.state.reverse_day = 0
+            # 매도 대금에 손익이 이미 포함되어 있으므로 종료 현금을 새 회차 원금으로 사용합니다.
+            self.state.initial_budget = round(self.state.remaining_cash, 2)
+            one_unit_cash = self.calculate_one_unit_cash()
 
         # 2. Process Buys
         if total_bought_qty > 0:

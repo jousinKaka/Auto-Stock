@@ -34,6 +34,8 @@ class DailyExecutionRecord(BaseModel):
     
     remaining_cash_before: float
     remaining_cash_after: float
+    initial_budget: Optional[float] = None
+    excluded_cash: float = 0.0
     strategy_shares_cycle: Optional[int] = None
     broker_cash_usd: Optional[float] = None
     broker_soxl_shares: Optional[int] = None
